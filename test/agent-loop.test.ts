@@ -16,7 +16,16 @@ const { startJob } = await import("../src/agent/index.js");
 type AgentEvent = import("../src/agent/index.js").AgentEvent;
 
 after(() => fake.close());
-beforeEach(() => fake.reset());
+beforeEach(() => {
+  fake.reset();
+  process.env.AGENT_PROVIDER = "claude";
+  process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+  delete process.env.ANTHROPIC_AUTH_TOKEN;
+  delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.DEEPSEEK_BASE_URL;
+  delete process.env.DEEPSEEK_MODEL;
+  delete process.env.DEEPSEEK_EFFORT;
+});
 
 async function newProject() {
   const p = await store.createProject("loop");
@@ -43,6 +52,138 @@ const toolResults = (r: Recorded) =>
 const errorsOf = (events: AgentEvent[]) => events.filter((e) => e.type === "error");
 
 describe("agent loop against a fake Messages API", () => {
+  it("runs DeepSeek vision → generation → visual review without an Anthropic key", async () => {
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
+    process.env.DEEPSEEK_BASE_URL = `${fake.url}/anthropic`;
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_AUTH_TOKEN = "unrelated-claude-token";
+    const projectId = await newProject();
+    fake.script(
+      { content: [
+        { type: "thinking", thinking: "先提炼风格。" },
+        { type: "tool_use", id: "ds_style", name: "save_style_guide", input: validStyleGuide() },
+      ], stop_reason: "tool_use", usage: { input_tokens: 1_000_000, output_tokens: 100_000, cache_read_input_tokens: 1_000_000 } },
+      { content: [gen("ds_gen", "蓝剑")], stop_reason: "tool_use" },
+      (req) => {
+        const [assetId] = assetIdsFromLastToolResults(req);
+        assert.ok((toolResults(req)[0].content as { type: string }[]).some((b) => b.type === "image"));
+        return { content: [{ type: "tool_use", id: "ds_review", name: "review_asset", input: {
+          asset_id: assetId, verdict: "approved", consistency_score: 9, notes: "配色一致",
+        } }], stop_reason: "tool_use" };
+      },
+      say("完成。"),
+    );
+    const { job, events } = await run({ projectId });
+    assert.deepEqual(errorsOf(events), []);
+    assert.equal(job.usage.status, "ok");
+    const first = fake.requests[0];
+    assert.equal(first.path, "/anthropic/v1/messages?beta=true");
+    assert.equal(first.headers["x-api-key"], "sk-deepseek-test");
+    assert.equal(first.headers.authorization, undefined, "do not forward Claude credentials");
+    assert.equal(first.headers["anthropic-beta"], undefined);
+    assert.equal(first.body.model, "deepseek-flash");
+    assert.equal(first.body.fallbacks, undefined);
+    assert.equal(first.body.cache_control, undefined);
+    assert.deepEqual(first.body.thinking, { type: "enabled", budget_tokens: 10000 });
+    assert.deepEqual(first.body.output_config, { effort: "high" });
+    assert.ok((first.body.tools as Record<string, unknown>[]).every((t) => !("eager_input_streaming" in t)));
+    assert.ok((first.body.messages[0].content as { type: string }[]).some((b) => b.type === "image"));
+    assert.equal((fake.requests[1].body.messages[1].content as { signature: string }[])[0].signature, "sig_0");
+    assert.equal((await store.loadProject(projectId)).assets[0].status, "approved");
+    assert.equal(job.usage.claude.requests, 4);
+    assert.equal(job.usage.cost.claude, 0.426);
+    const conv = await store.loadConversation(projectId);
+    assert.equal(conv!.agentProvider, "deepseek");
+    assert.equal(conv!.model, "deepseek-flash");
+
+    fake.reset();
+    process.env.DEEPSEEK_EFFORT = "low";
+    fake.script(say("继续。"));
+    await run({ projectId });
+    assert.equal(fake.requests[0].body.messages.length, conv!.messages.length + 1);
+    assert.deepEqual(fake.requests[0].body.output_config, { effort: "low" });
+  });
+
+  it("starts fresh when switching services, including legacy Claude history", async () => {
+    const projectId = await newProject();
+    await store.saveConversation(projectId, {
+      messages: [{ role: "assistant", content: [{ type: "redacted_thinking", data: "claude-only" }] }],
+      runs: [{ request: "old", at: new Date().toISOString() }],
+    });
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
+    process.env.DEEPSEEK_BASE_URL = fake.url;
+    process.env.DEEPSEEK_MODEL = "deepseek-v4-flash-vision-exp";
+    fake.script(say("DeepSeek"));
+    const { events } = await run({ projectId });
+    assert.deepEqual(errorsOf(events), []);
+    assert.equal(fake.requests[0].body.model, "deepseek-v4-flash-vision-exp");
+    assert.equal(fake.requests[0].body.messages.length, 1);
+    assert.ok(events.some((e) => e.type === "status" && /已切换/.test(e.text)));
+    fake.reset();
+    process.env.AGENT_PROVIDER = "claude";
+    fake.script(say("Claude"));
+    await run({ projectId });
+    assert.equal(fake.requests[0].body.messages.length, 1);
+    assert.equal((await store.loadConversation(projectId))!.agentProvider, "claude");
+  });
+
+  it("reports missing DeepSeek credentials without calling an API", async () => {
+    process.env.AGENT_PROVIDER = "deepseek";
+    const { events } = await run({ projectId: await newProject() });
+    assert.match((errorsOf(events)[0] as { message: string }).message, /DEEPSEEK_API_KEY/);
+    assert.equal(fake.requests.length, 0);
+  });
+
+  it("resets history when changing the model within a service", async () => {
+    const projectId = await newProject();
+    fake.script(say("first"));
+    await run({ projectId });
+    fake.reset();
+    process.env.CLAUDE_MODEL = "claude-sonnet-5-5";
+    try {
+      fake.script(say("second"));
+      const { events } = await run({ projectId });
+      assert.deepEqual(errorsOf(events), []);
+      assert.equal(fake.requests[0].body.messages.length, 1);
+    } finally {
+      process.env.CLAUDE_MODEL = "claude-opus-5-5";
+    }
+  });
+
+  it("uses the default provider and DeepSeek endpoint, and validates configuration", async () => {
+    const { config } = await import("../src/config.js");
+    delete process.env.AGENT_PROVIDER;
+    assert.equal(config.agentProvider, "claude");
+    process.env.AGENT_PROVIDER = "typo";
+    assert.throws(() => config.agentProvider, /AGENT_PROVIDER/);
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.DEEPSEEK_EFFORT = "medium";
+    assert.throws(() => config.effort, /DEEPSEEK_EFFORT/);
+    process.env.DEEPSEEK_EFFORT = "max";
+    assert.equal(config.effort, "max");
+    process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
+    const originalFetch = globalThis.fetch;
+    let requestedUrl = "";
+    let requestedHeaders = new Headers();
+    globalThis.fetch = async (input, init) => {
+      requestedUrl = input instanceof Request ? input.url : String(input);
+      requestedHeaders = new Headers(init?.headers);
+      return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "default endpoint reached" } }), {
+        status: 400, headers: { "content-type": "application/json" },
+      });
+    };
+    try {
+      const { events } = await run({ projectId: await newProject() });
+      assert.equal(requestedUrl, "https://api.deepseek.com/anthropic/v1/messages?beta=true");
+      assert.equal(requestedHeaders.get("x-api-key"), "sk-deepseek-test");
+      assert.match((errorsOf(events)[0] as { message: string }).message, /default endpoint reached/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("runs style guide → parallel generation → review → summary", async () => {
     const projectId = await newProject();
     fake.script(

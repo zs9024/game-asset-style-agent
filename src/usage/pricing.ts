@@ -10,6 +10,10 @@ export interface ModelPrice {
 
 // https://platform.claude.com/docs/en/about-claude/pricing — 5-minute cache writes. First match wins.
 const MODEL_PRICES: [RegExp, ModelPrice][] = [
+  // https://developers.openai.com/api/docs/models/gpt-6.1-sol — Standard, <=272K input tokens.
+  [/^gpt-6\.1-sol(?:-\d{4}-\d{2}-\d{2})?$/, { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.1 }],
+  // https://api-docs.deepseek.com/quick_start/pricing/ — peak rates (conservative estimate), 2026-10-24.
+  [/^deepseek-(?:flash|v4-flash|v4-flash-vision-exp|v4[.-]1-flash(?:-\d+)?)$/, { input: 0.3, output: 1.2, cacheWrite: 0.3, cacheRead: 0.006 }],
   [/fable-5-1|mythos-5-1/, { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 0.25 }],
   [/fable-5|mythos-5/, { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 }],
   [/opus-5-5/, { input: 4, output: 20, cacheWrite: 5, cacheRead: 0.2 }],
@@ -23,9 +27,9 @@ const MODEL_PRICES: [RegExp, ModelPrice][] = [
 
 type Env = Record<string, string | undefined>;
 
-/** Env override: CLAUDE_PRICE="input,output,cacheWrite,cacheRead" (USD / MTok) applies to every model. */
+/** Per-service override: "input,output,cacheWrite,cacheRead" (USD / MTok). */
 export function modelPrice(model: string, env: Env = process.env): ModelPrice | null {
-  const o = env.CLAUDE_PRICE?.split(",").map(Number);
+  const o = (model.startsWith("deepseek-") ? env.DEEPSEEK_PRICE : model.startsWith("gpt-") ? env.GPT_PRICE : env.CLAUDE_PRICE)?.split(",").map(Number);
   if (o?.length === 4 && o.every((n) => Number.isFinite(n) && n >= 0)) {
     return { input: o[0], output: o[1], cacheWrite: o[2], cacheRead: o[3] };
   }
@@ -56,9 +60,10 @@ export function tokenCost(u: TokenUsage, p: ModelPrice): number {
 
 export const roundUsd = (n: number) => Math.round(n * 1e6) / 1e6;
 
-export function computeCost(run: Pick<RunUsage, "claude" | "images">, env: Env = process.env): Cost {
+export function computeCost(run: Pick<RunUsage, "claude" | "images" | "agent">, env: Env = process.env): Cost {
   let claude: number | null = 0;
   for (const [model, u] of Object.entries(run.claude.byModel)) {
+    if (run.agent?.authMode === "chatgpt") continue;
     const p = modelPrice(model, env);
     if (!p) {
       claude = null;

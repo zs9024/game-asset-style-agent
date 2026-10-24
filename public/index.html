@@ -24,7 +24,7 @@
     </div>
     <div class="project-bar">
       <select id="projectSelect" aria-label="选择项目"></select>
-      <button id="usageBtn" class="btn ghost" title="Claude tokens 与图像调用统计">用量</button>
+      <button id="usageBtn" class="btn ghost" title="Agent tokens 与图像调用统计">用量</button>
       <button id="newProject" class="btn ghost">新建项目</button>
       <a id="backupProject" class="btn ghost" href="#" download title="导出整个项目（参考图、风格指南、素材、对话、用量）">备份</a>
       <label class="btn ghost" title="从备份 zip 恢复为一个新项目">导入<input type="file" id="importProject" accept=".zip,application/zip" hidden /></label>
@@ -56,6 +56,7 @@
 
     <section class="panel" id="runPanel">
       <h2>② 描述需求</h2>
+      <div id="agentConnection" class="muted" hidden></div>
       <div class="chips" id="typeChips"></div>
       <textarea id="request" rows="4" placeholder="例如：为一个蘑菇森林关卡做 6 个道具图标（回血蘑菇、毒蘑菇、木剑、铁盾、金币、钥匙），再做主角小狐狸的立绘和 4 帧走路动画。"></textarea>
       <div class="run-row">

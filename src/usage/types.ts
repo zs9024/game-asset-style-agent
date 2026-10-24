@@ -8,6 +8,7 @@ export interface TokenUsage {
 
 /** USD; a null part means no price is known for some model / provider used. */
 export interface Cost {
+  /** Agent API token cost; ChatGPT subscription tokens add no Platform API charge. Legacy field name. */
   claude: number | null;
   images: number | null;
   total: number;
@@ -20,8 +21,11 @@ export interface RunUsage {
   finishedAt?: string;
   /** "interrupted": the server stopped before the run finished */
   status: "running" | "ok" | "error" | "stopped" | "interrupted";
-  /** "demo": scripted run; "manual": image model only. Neither calls Claude. */
+  /** "demo": scripted run; "manual": image model only. Neither calls the agent model. */
   mode: "agent" | "demo" | "manual";
+  /** Subscription requests consume plan allowance; they are not billed at Platform token rates. */
+  agent?: { provider: "claude" | "deepseek" | "gpt"; model: string; authMode?: "api_key" | "chatgpt" };
+  /** Agent requests/tokens for every service; legacy API field name. */
   claude: {
     requests: number;
     /** token usage per model actually served (server-side fallback may switch models) */

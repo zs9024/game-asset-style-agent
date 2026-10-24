@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/wangchaozhi/game-asset-style-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wangchaozhi/game-asset-style-agent/actions/workflows/ci.yml)
 
-上传几张风格参考图，由 Claude 担任「AI 美术总监」：先从参考图提炼可复用的**风格指南**（色板 hex、技法、线条、光影、视角、比例），再按你的需求规划素材清单、调用图像模型批量生成，**逐张看图审核**，风格跑偏就带着具体问题重画——最终得到一套看起来出自同一款游戏的素材。
+上传几张风格参考图，由 Claude、DeepSeek Flash 或 GPT 担任「AI 美术总监」：先从参考图提炼可复用的**风格指南**（色板 hex、技法、线条、光影、视角、比例），再按你的需求规划素材清单、调用图像模型批量生成，**逐张看图审核**，风格跑偏就带着具体问题重画——最终得到一套看起来出自同一款游戏的素材。
 
 ![flow](https://img.shields.io/badge/flow-参考图→风格指南→规划→生成→审核→重画-e2562b)
 
@@ -13,21 +13,21 @@
   <img alt="Game Asset Agent 主界面：风格参考与风格指南、需求与 Agent 日志、素材库" src="docs/screenshots/main-light.png" />
 </picture>
 
-<sub>截图为演示模式（`AGENT_MODE=demo`），素材是离线 Mock 占位图；接入 Claude 与图像模型后为真实生成结果。</sub>
+<sub>截图为演示模式（`AGENT_MODE=demo`），素材是离线 Mock 占位图；接入 Agent 与图像模型后为真实生成结果。</sub>
 
 ## 功能
 
-- 🎨 **风格提炼**：Claude 视觉分析参考图，保存结构化风格指南，项目内所有后续生成都复用它
+- 🎨 **风格提炼**：Agent 视觉分析参考图，保存结构化风格指南，项目内所有后续生成都复用它
 - 🧩 **10 类游戏素材**：角色、精灵表、敌人、道具图标、地图瓦片、场景物件、背景、UI、特效、头像
 - 🎯 **色板一致性检测**：在 Lab 色彩空间计算素材与风格色板的色差，给出色板内像素占比与主要色板外颜色；结果附在每次生成里供 Agent 审核，查看器也可查看
-- 🔁 **自审闭环**：每张图生成后 Claude 会对照参考图打一致性分（1–10），结果附带色板 / 瓦片接缝 / 帧抖动自动检测；接缝、抖动、残留背景这类问题直接用后处理工具修复（不花图像费用），其他问题带着具体意见重画（每张最多 2 次）
+- 🔁 **自审闭环**：每张图生成后 Agent 会对照参考图打一致性分（1–10），结果附带色板 / 瓦片接缝 / 帧抖动自动检测；接缝、抖动、残留背景这类问题直接用后处理工具修复（不花图像费用），其他问题带着具体意见重画（每张最多 2 次）
 - 🧬 **跨素材一致性**：可把已通过的素材（如主角设定图）作为额外参考，画同一角色的动画帧 / 头像
 - 📦 **引擎可用的导出**：按类型分目录的 ZIP（含多尺寸、manifest、Godot 4 SpriteFrames `.tres`），以及图集 PNG + TexturePacker JSON（Phaser / PixiJS 可直接加载）和 Phaser 动画定义
 - 💰 **成本可控**：实时用量与费用估算；单次运行可设图像次数 / 费用上限，达到后 Agent 停止出图并收尾；图像接口限流自动退避重试
 - 🛠️ **素材工作台**：精灵表切帧与防抖对齐、瓦片一键无缝化、去背景、游戏尺寸缩放、版本对比（滑块 / 并排）、改 prompt 直接重生成（不经过 Agent）
 - 🗂️ **素材管理**：搜索与类型筛选、批量通过 / 驳回 / 按意见重画 / 导出、回收站（7 天可恢复）、风格指南历史与回滚、参考图备注、项目备份与恢复
 - ⚡ 并行生成、SSE 实时日志（含思考摘要）、可随时停止、刷新页面自动续接任务、后台完成提醒、查看器快捷键
-- 🔌 图像模型可插拔：OpenAI `gpt-image-1`（多图参考 edits）、Google Gemini Image、本地 Stable Diffusion WebUI（AUTOMATIC1111 / Forge，可选 IP-Adapter 参考图风格）、离线 Mock
+- 🔌 图像模型可插拔：OpenAI `gpt-image-1`（多图参考 edits）、Google Gemini Image、火山方舟 Doubao Seedream 5.0 Flash（最多 10 张参考图）、本地 Stable Diffusion WebUI（AUTOMATIC1111 / Forge，可选 IP-Adapter 参考图风格）、离线 Mock
 
 <img alt="素材查看器：审核与按意见重画、色板一致性、精灵帧抖动检测与对齐、游戏尺寸" src="docs/screenshots/viewer.png" />
 
@@ -35,9 +35,93 @@
 
 ```bash
 npm install
-cp .env.example .env   # 填入 ANTHROPIC_API_KEY 以及 OPENAI_API_KEY / GEMINI_API_KEY / SD_WEBUI_URL 之一
+cp .env.example .env   # 配置 Claude、DeepSeek 或 GPT，以及一个图像通道（见下文）
 npm start              # http://localhost:5173
 ```
+
+没有 Claude key 时，在 `.env` 中选择 DeepSeek：
+
+```dotenv
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=你的DeepSeek密钥
+DEEPSEEK_MODEL=deepseek-flash
+```
+
+无需填写 `ANTHROPIC_API_KEY`。DeepSeek 负责看图、规划和审核；实际出图可配置 Seedream 的 `ARK_API_KEY`、`OPENAI_API_KEY`、`GEMINI_API_KEY` 或本地 `SD_WEBUI_URL`，也可用 Mock 测试流程。
+
+当前官方视觉模型名为 `deepseek-flash`；旧的 `deepseek-v4-flash-vision-exp` 已由新版 Flash 接替，`deepseek-v4-pro` 不支持视觉。默认使用 Anthropic 兼容地址 `https://api.deepseek.com/anthropic`，可用 `DEEPSEEK_BASE_URL` 覆盖；`DEEPSEEK_EFFORT=low|high|max`（默认 `high`）。参见 [DeepSeek 视觉文档](https://api-docs.deepseek.com/guides/vision/)。切换 Agent 服务商或模型后会开启新对话，保留风格指南与素材。默认 `AGENT_PROVIDER=claude`，原有配置继续可用。
+
+### 使用 GPT：API key 或 ChatGPT 订阅登录
+
+两种模式都支持参考图分析、规划、工具调用和看图审核，通过 `.env` 选择：
+
+| 配置 | API key | ChatGPT 订阅 |
+|---|---|---|
+| `AGENT_PROVIDER` | `gpt` | `gpt` |
+| `GPT_AUTH_MODE` | `api_key`（默认） | `chatgpt` |
+| `GPT_MODEL` | `gpt-6.1-sol`（默认，可修改） | 账号可用的模型，可先用 `gpt-6.1-sol` |
+| 凭证 | `OPENAI_API_KEY` | 页面中 **Continue with ChatGPT** 完成授权 |
+| 费用 | OpenAI Platform 按 API 用量单独计费 | 使用符合条件的 ChatGPT 订阅额度/可用 credits |
+
+API key 模式示例：
+
+```dotenv
+AGENT_PROVIDER=gpt
+GPT_AUTH_MODE=api_key
+OPENAI_API_KEY=你的OpenAI平台密钥
+GPT_MODEL=gpt-6.1-sol
+```
+
+在 [OpenAI Platform](https://platform.openai.com/api-keys) 创建 key 并设置 API 计费。Plus 订阅不会抵扣 API key 的调用费用。`GPT_BASE_URL` 可覆盖 API 地址，默认 `https://api.openai.com/v1`；`GPT_EFFORT=low|medium|high|xhigh|max`（默认 `medium`，模型需支持对应强度）。
+
+ChatGPT 订阅模式示例：
+
+```dotenv
+AGENT_PROVIDER=gpt
+GPT_AUTH_MODE=chatgpt
+GPT_MODEL=gpt-6.1-sol
+```
+
+去掉 `AGENT_MODE=demo`，启动项目后从本机直接打开 `http://127.0.0.1:5173`，在需求面板点击 **Continue with ChatGPT**，在新窗口登录并授权订阅用量。可以添加/选择多个 ChatGPT 账号或工作区；点击「查看可用模型」获取当前账号的模型列表，将对应 id 填入 `GPT_MODEL` 后重启。
+
+也可以在本机终端运行 `npm run chatgpt:login`，打开命令打印的登录地址完成授权；`npm run chatgpt:login -- --new` 添加账号，`-- --account oaiapp_…` 重新登录已有账号。此流程使用项目自己的官方 OAuth（PKCE、身份签名校验、令牌续期），无需提取或复制 Codex 的登录凭证。订阅模式固定使用官方 Responses API，忽略 `GPT_BASE_URL`，且不会在额度不足或授权失效时自动改用 API key。
+
+订阅登录适用于官方支持的开源/本地运行场景，账号资格、可用模型与额度由 OpenAI 决定，并非无限使用；Plus 的用量限制会与其他使用该订阅的应用共享。参见 [官方订阅接入](https://developers.openai.com/siwc/token-sharing-open-source)、[当前限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。实际生成图片仍通过独立的 Seedream / OpenAI / Gemini / 本地 SD / Mock 通道；订阅登录令牌只用于 Agent 看图和规划，不会作为图像通道的 key。
+
+登录凭证保存在 `DATA_DIR/auth/chatgpt.json`（默认 `data/auth/chatgpt.json`），按账号分别保存，不包含在项目备份中。保护整个数据目录，不要上传或共享该文件；Unix 下以 `0600` 权限原子写入，Windows 下须限制数据目录访问权限。退出会尝试撤销远程会话并清除本地令牌。界面登录管理仅接受本机直接请求；Docker/远程自托管时，先在本机完成登录，再按照[官方自托管指南](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)安全转移该凭证文件到服务器的 `DATA_DIR/auth/`。同一数据目录只运行一个实例，避免刷新令牌冲突。
+
+GPT API token 费用按默认模型的标准短上下文价估算，可用 `GPT_PRICE=输入,输出,缓存写,缓存读` 覆盖（美元/百万 tokens）；长上下文等附加费用以平台账单为准。订阅模式保留 token 统计，Agent API 费用记为 0，表示未按 Platform API 计费；图像费用继续单独统计。切换服务商、模型、鉴权模式或 ChatGPT 账号会开启新对话，保留风格指南与素材。
+
+### 使用 Seedream 5.0 Flash 出图
+
+没有 OpenAI / Gemini 图像 key 时，可以直接接入火山方舟：
+
+```dotenv
+ARK_API_KEY=你的火山方舟密钥
+SEEDREAM_MODEL=doubao-seedream-5-0-flash-260915
+SEEDREAM_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+SEEDREAM_SIZE=2K
+SEEDREAM_WATERMARK=false
+SEEDREAM_RESPONSE_FORMAT=b64_json
+```
+
+保留你的 `AGENT_PROVIDER=deepseek` 或 `gpt` 配置，去掉 `AGENT_MODE=demo` 后重启，在「图像模型」中选择 **Doubao Seedream 5.0 Flash（火山方舟）**。如果 Seedream 是第一个已配置的图像通道，会自动选中；GPT 使用 API key 时也会启用 OpenAI 图像通道，请显式选择 Seedream。HTTP 运行或直接重生成请求传入 `"provider": "seedream"` 即可。
+
+通道通过方舟的 JSON `/images/generations` 接口传入参考图，使用指定的 Flash 模型，默认返回 Base64 编码的 PNG；也支持 `SEEDREAM_RESPONSE_FORMAT=url`，拿到临时链接后立即下载保存，不把方舟 key 发给图片下载地址。一次请求只生成一张图，不开启图层拆分或组图；批量素材仍由 Agent 逐张规划、并行调用和审核。官方说明见 [Seedream 5.0 pro / flash 教程](https://docs.volcengine.com/docs/ark/seedream-5-0-pro?lang=zh) 和 [Image generation API](https://docs.volcengine.com/docs/ark/image-generation-api?lang=zh)。
+
+`SEEDREAM_SIZE` 支持 `1K` / `1.5K` / `2K`（默认）。为固定画布比例，实际请求使用以下宽高；精灵表则按帧数计算单行画布，保持每格为正方形，支持 2–16 帧。
+
+| 档位 | 正方形 | 横图 | 竖图 |
+|---|---|---|---|
+| 1K | 1024×1024 | 1280×720 | 720×1280 |
+| 1.5K | 1536×1536 | 1920×1080 | 1080×1920 |
+| 2K | 2048×2048 | 2560×1440 | 1440×2560 |
+
+最多发送 10 张参考图：先放 `consistency_asset_ids` 指定的已有素材，再放项目风格参考图；超限时保留前 10 张并在任务日志中提示。当前项目会将参考图压缩为 JPEG，而 Seedream 原生透明模式要求仅输入一张带透明通道的图，因此本通道为透明素材请求纯白背景，再复用本地去背景流程，保留原图以便调整容差。`SEEDREAM_WATERMARK=true` 可开启右下角的可见水印，默认关闭。
+
+用量按 `seedream` 通道累计，可配置 `IMAGE_PRICE_SEEDREAM`（美元/张）估算费用；留空则只统计次数，费用显示未知且不计入美元预算。不要直接填人民币单价；参考图数量、分辨率等带来的实际费用以方舟账单为准。方舟 key 仅保存在服务端环境配置中，不需要在聊天或前端填写。
+
+### 演示模式
 
 没有任何 key 时可先体验界面：
 
@@ -45,7 +129,7 @@ npm start              # http://localhost:5173
 AGENT_MODE=demo npm start
 ```
 
-演示模式不调用 Claude，用脚本跑一遍「风格提取 → 生成 → 入库」，图像用本地 Mock 占位图。
+演示模式不调用 Agent 模型，用脚本跑一遍「风格提取 → 生成 → 入库」，图像用本地 Mock 占位图。
 
 ## 部署
 
@@ -111,15 +195,17 @@ src/
   domain/assetTypes.ts   素材类型定义
   routes/                config · projects · refs · assets · export · jobs（运行/SSE）· usage
   ops/assetOps.ts        后处理（抠图、无缝化、帧对齐、切帧），HTTP 接口与 Agent 工具共用
-  agent/                 Claude 智能体
+  agent/                 Claude / DeepSeek / GPT 智能体
     tools.ts / schemas.ts  工具定义与 zod 输入校验
     prompts.ts             系统提示词与每轮开场
     loop.ts                手写 tool-use 循环（Anthropic TypeScript SDK）
+    gpt.ts / prepare.ts     GPT Responses 循环 / 共用的参考图、重画与对话准备
     runTool.ts / assets.ts 工具执行、生成素材入库、精灵表切帧
     events.ts / jobs.ts    任务注册、事件广播、启动与收尾
     demo.ts / manual.ts    无 key 演示模式 / 改 prompt 直接重生成
     budget.ts              单次运行预算
-  providers/             图像通道：openai · gemini · mock
+  providers/             图像通道：openai · gemini · seedream · sdwebui · mock
+  openai/                ChatGPT OAuth 登录、账号与令牌管理、终端登录入口
   image/                 sharp 图像处理：io · background（抠图）· spriteSheet · tiles · sizes
   export/                ZIP 写入与素材包组装
   usage/                 tokens / 图像调用统计与费用估算
@@ -131,14 +217,16 @@ Agent 工具：
 | 工具 | 作用 |
 |---|---|
 | `save_style_guide` | 保存从参考图提炼的风格指南（含英文 `prompt_prefix`） |
-| `generate_image` | 调用图像模型；自动附带参考图，可额外附带已有素材；结果图片和色板检测回传给 Claude 查看 |
+| `generate_image` | 调用图像模型；自动附带参考图，可额外附带已有素材；结果图片和色板检测回传给 Agent 查看 |
 | `review_asset` | 记录通过/驳回、一致性评分和原因 |
 | `fix_tile_seams` | 瓦片接缝检测不通过时边缘融合成无缝版本（不调用图像模型） |
 | `align_sprite_frames` | 精灵表帧抖动时按锚点对齐各帧（不调用图像模型） |
 | `remove_background` | 换个容差重新抠背景（不调用图像模型） |
 | `snap_to_palette` | 平涂 / 像素风素材出现色板外颜色时，把颜色吸附到风格色板（不调用图像模型） |
 
-默认模型 `claude-opus-5-5`（adaptive thinking，effort 可通过 `CLAUDE_EFFORT` 调整），已开启服务端 refusal fallback（`fallbacks: "default"`）和 prompt caching。
+Claude 默认模型 `claude-opus-5-5`（adaptive thinking，effort 可通过 `CLAUDE_EFFORT` 调整），已开启服务端 refusal fallback（`fallbacks: "default"`）和 prompt caching。DeepSeek 通过兼容 Messages API 复用同一套工具、视觉审核、流式日志与预算限制，仅发送其支持的参数。GPT 使用官方 OpenAI SDK 的 Responses API，工具按 namespace 分组，保留加密推理上下文，支持 API key 与 ChatGPT 订阅两种鉴权。
+
+用量面板统计所选 Agent 模型。DeepSeek Flash 按官方峰时价保守估算，可通过 `DEEPSEEK_PRICE` 覆盖（输入、输出、缓存写、缓存读，美元/百万 tokens）；实际费用以服务商账单为准。图像单价另行配置。
 
 ## 配置
 

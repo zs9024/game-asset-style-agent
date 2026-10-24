@@ -121,5 +121,5 @@ export async function runDemo(job: Job, opts: RunOptions) {
     }),
   );
   await recordDemoTurn(project.id, opts, `生成了 ${types.length} 个素材`);
-  emit(job, { type: "text", delta: "演示完成。配置 ANTHROPIC_API_KEY 并去掉 AGENT_MODE=demo 即可启用真正的 Claude 美术总监。\n" });
+  emit(job, { type: "text", delta: "演示完成。配置 Claude、DeepSeek 或 GPT，并去掉 AGENT_MODE=demo 即可启用 AI 美术总监。\n" });
 }

@@ -14,6 +14,8 @@ export interface GenerateRequest {
   frames?: number;
   /** told before each retry of a rate-limited or failed request */
   onRetry?: (info: import("./retry.js").RetryInfo) => void;
+  /** Provider-specific adjustments worth showing in the job log, e.g. reference limits. */
+  onNotice?: (message: string) => void;
 }
 
 export interface ImageProvider {

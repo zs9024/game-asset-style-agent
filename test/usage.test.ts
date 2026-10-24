@@ -3,6 +3,22 @@ import { describe, it } from "node:test";
 import { addImageCall, addTokens, computeCost, imagePrice, modelPrice, newRunUsage, summarize, totalTokens } from "../src/usage/index.js";
 
 describe("modelPrice", () => {
+  it("prices GPT independently of Claude and DeepSeek overrides", () => {
+    assert.deepEqual(modelPrice("gpt-6.1-sol", { CLAUDE_PRICE: "99,99,99,99", DEEPSEEK_PRICE: "88,88,88,88" }), { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.1 });
+    assert.equal(modelPrice("gpt-6.1-sol-2026-10-01", {})?.input, 2);
+    assert.deepEqual(modelPrice("gpt-custom", { GPT_PRICE: "1,2,1.25,0.1" }), { input: 1, output: 2, cacheWrite: 1.25, cacheRead: 0.1 });
+    assert.equal(modelPrice("gpt-custom", {}), null);
+  });
+  it("prices DeepSeek Flash aliases and isolates service-specific overrides", () => {
+    for (const model of ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash-1017"]) {
+      assert.deepEqual(modelPrice(model, { CLAUDE_PRICE: "10,20,30,40" }), { input: 0.3, output: 1.2, cacheWrite: 0.3, cacheRead: 0.006 });
+    }
+    assert.deepEqual(modelPrice("deepseek-flash", { DEEPSEEK_PRICE: "0.15,0.6,0.15,0.003" }), { input: 0.15, output: 0.6, cacheWrite: 0.15, cacheRead: 0.003 });
+    assert.equal(modelPrice("deepseek-flash", { DEEPSEEK_PRICE: "bad" })?.input, 0.3);
+    assert.equal(modelPrice("claude-opus-5-5", { DEEPSEEK_PRICE: "1,2,3,4" })?.input, 4);
+    assert.equal(modelPrice("deepseek-unknown", {}), null);
+  });
+
   it("matches the most specific model family first", () => {
     assert.equal(modelPrice("claude-opus-5-5", {})?.input, 4);
     assert.equal(modelPrice("claude-opus-5", {})?.input, 5);
@@ -32,10 +48,21 @@ describe("imagePrice", () => {
     assert.equal(imagePrice("openai", { IMAGE_PRICE_OPENAI: "0.17" }), 0.17);
     assert.equal(imagePrice("gemini", { IMAGE_PRICE_GEMINI: " " }), null);
     assert.equal(imagePrice("gemini", { IMAGE_PRICE_GEMINI: "-1" }), null);
+    assert.equal(imagePrice("seedream", {}), null);
+    assert.equal(imagePrice("seedream", { IMAGE_PRICE_SEEDREAM: "0.02" }), 0.02);
   });
 });
 
 describe("run usage", () => {
+  it("tracks ChatGPT subscription tokens without charging Platform token prices, while still charging images", () => {
+    const run = newRunUsage("job_sub", "req", "agent");
+    run.agent = { provider: "gpt", model: "gpt-6.1-sol", authMode: "chatgpt" };
+    addTokens(run, "gpt-6.1-sol", { input_tokens: 1_000_000, output_tokens: 100_000 });
+    addImageCall(run, "openai", true);
+    assert.equal(run.claude.requests, 1);
+    assert.equal(totalTokens(run).input_tokens, 1_000_000);
+    assert.deepEqual(computeCost(run, { IMAGE_PRICE_OPENAI: "0.04", GPT_PRICE: "100,100,100,100" }), { claude: 0, images: 0.04, total: 0.04 });
+  });
   it("accumulates tokens per model and prices them", () => {
     const run = newRunUsage("job_1", "req", "agent");
     addTokens(run, "claude-opus-5-5", { input_tokens: 1_000_000, output_tokens: 100_000, cache_creation_input_tokens: null, cache_read_input_tokens: 1_000_000 });

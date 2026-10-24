@@ -54,6 +54,23 @@ describe("HTTP API (demo mode)", () => {
     assert.equal(page.headers.get("x-powered-by"), null);
   });
 
+  it("exposes the selected agent separately from image providers without exposing keys", async (t) => {
+    const previous = { provider: process.env.AGENT_PROVIDER, model: process.env.DEEPSEEK_MODEL, key: process.env.DEEPSEEK_API_KEY };
+    t.after(() => {
+      for (const [key, value] of Object.entries({ AGENT_PROVIDER: previous.provider, DEEPSEEK_MODEL: previous.model, DEEPSEEK_API_KEY: previous.key })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.DEEPSEEK_MODEL = "deepseek-flash";
+    process.env.DEEPSEEK_API_KEY = "secret-deepseek-test";
+    const { body } = await json("/api/config");
+    assert.deepEqual(body.agent, { provider: "deepseek", model: "deepseek-flash" });
+    assert.ok(body.providers.some((p: { id: string }) => p.id === "mock"));
+    assert.ok(!JSON.stringify(body).includes("secret-deepseek-test"));
+  });
+
   it("creates a project and uploads a reference", async () => {
     id = (await json("/api/projects", { method: "POST", body: { name: "API" } })).body.id;
     const fd = new FormData();

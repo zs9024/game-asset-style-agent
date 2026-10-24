@@ -70,7 +70,12 @@ export interface Project {
 }
 
 export interface Conversation {
-  /** Raw Messages API params, exactly as sent/received. Never edited, only appended to. */
+  /** Missing on legacy Claude conversations. */
+  agentProvider?: "claude" | "deepseek" | "gpt";
+  model?: string;
+  authMode?: "api_key" | "chatgpt";
+  accountId?: string;
+  /** Raw Messages API messages or Responses API items, preserved verbatim and only appended to. */
   messages: unknown[];
   runs: { request: string; at: string }[];
 }

@@ -1,5 +1,6 @@
 import type { Server } from "node:http";
 import { jobs } from "./agent/index.js";
+import { chatGPTAuth } from "./openai/chatgpt.js";
 import { flushUsageWrites, listProjects, markInterruptedRuns, purgeExpiredTrash, removeOrphanFiles } from "./store/index.js";
 
 export { purgeExpiredTrash };
@@ -46,6 +47,7 @@ export function installShutdownHandlers(server: Server, log = console.log) {
     if (closing) return process.exit(1); // second signal: give up waiting
     closing = true;
     log(`${signal} 收到，正在停止…`);
+    chatGPTAuth.close();
     server.close();
     server.closeAllConnections?.();
     const n = await stopAllJobs();

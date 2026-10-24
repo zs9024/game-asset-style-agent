@@ -38,12 +38,47 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:5173/api/projects
   "assetTypes": { "item_icon": "道具 / 装备图标" },
   "sizePresets": { "item_icon": ["16", "32", "64", "128"] },
   "demo": false,
+  "agent": { "provider": "gpt", "model": "gpt-6.1-sol", "authMode": "chatgpt" },
   "auth": true,
   "budget": { "maxImages": 40, "maxUsd": null }
 }
 ```
 
-图像通道 id：`openai`、`gemini`、`sdwebui`、`mock`。素材类型：`character`、`sprite_sheet`、`enemy`、`item_icon`、`tile`、`prop`、`background`、`ui`、`vfx`、`portrait`。
+图像通道 id：`openai`、`gemini`、`seedream`、`sdwebui`、`mock`。素材类型：`character`、`sprite_sheet`、`enemy`、`item_icon`、`tile`、`prop`、`background`、`ui`、`vfx`、`portrait`。
+
+Seedream 配置 `ARK_API_KEY` 后可用，默认模型 `doubao-seedream-5-0-flash-260915`；可通过 `SEEDREAM_MODEL`、`SEEDREAM_BASE_URL` 覆盖。`SEEDREAM_SIZE=1K|1.5K|2K`（默认 `2K`）按素材横竖比例或精灵帧数计算像素宽高。`SEEDREAM_RESPONSE_FORMAT=b64_json|url`（默认 `b64_json`）返回的图片均保存到项目本地，`SEEDREAM_WATERMARK=false|true`（默认 `false`）控制可见水印。最多发送 10 张参考图，已有素材参考优先，超限时日志提示。透明素材先生成纯白背景，再复用本地去背景处理。运行与直接重生成的 `provider` 均可传 `"seedream"`，不需要新增调用接口。
+
+`agent` 返回服务器选择的 Agent 服务商与模型。通过 `.env` 设置 `AGENT_PROVIDER=claude|deepseek|gpt`（默认 `claude`）；DeepSeek 配置 `DEEPSEEK_API_KEY` 与 `DEEPSEEK_MODEL=deepseek-flash`，无需 Claude key。默认 `DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic`，思考强度 `DEEPSEEK_EFFORT=low|high|max`（默认 `high`）。GPT 默认 `GPT_MODEL=gpt-6.1-sol`，`GPT_EFFORT=low|medium|high|xhigh|max`（默认 `medium`）；`GPT_AUTH_MODE=api_key` 使用 `OPENAI_API_KEY` 按量付费，`chatgpt` 使用下述官方订阅登录。只有 GPT 返回 `agent.authMode`。API key 模式可设置 `GPT_BASE_URL`；订阅模式固定使用官方地址且不会自动切换成付费 API。
+
+图像通道与 Agent 独立，运行请求里的 `provider` 仍只选择图像通道。切换 Agent 服务商、模型、鉴权模式或 ChatGPT 账号后，下一次运行自动开启新对话。
+
+## ChatGPT 订阅连接
+
+以下接口仍受 `ACCESS_TOKEN` 鉴权保护，并且只允许本机直接访问（`localhost` / `127.0.0.1` / IPv6 loopback），拒绝代理转发。POST 必须为同源 JSON 请求。回调由临时的 `127.0.0.1:<port>/auth/callback` 监听器处理，登录最多等待 10 分钟。凭证仅保存在服务器的 `DATA_DIR/auth/chatgpt.json`，不通过这些接口返回。远程自托管可先运行本机 `npm run chatgpt:login` 再安全转移凭证，见 README。
+
+### `GET /api/chatgpt/status`
+
+返回 `{ activeAccountId?, connected, planEnabled, accounts: [{ id, email?, label, connected, planEnabled }], attempt?: { id, status, error? } }`。账号 id 是注册的 `oaiapp_…` 客户端 id；相同邮箱的不同工作区独立列出。`attempt.status` 为 `pending` / `complete` / `error`。`connected` 表示本地保存了登录令牌；能否实际使用模型仍以服务端授权和额度为准。
+
+### `POST /api/chatgpt/login`
+
+请求 `{}` 添加账号；`{ "accountId": "oaiapp_…" }` 重新授权已有账号。返回 `{ url, attemptId }`，由用户打开 `url` 完成登录，随后轮询 status。URL 可能携带官方登录提示信息，不应记录到日志或转发给其他人。身份验证完成后才会切换当前账号；授权未包含订阅权限时 `planEnabled=false`，不允许执行 Agent 推理。
+
+### `POST /api/chatgpt/account`
+
+请求 `{ "accountId": "oaiapp_…" }` 选择已有账号，返回更新后的 status；会停止进行中的订阅 Agent 任务，防止混用账号上下文。
+
+### `POST /api/chatgpt/cancel`
+
+请求 `{}`，取消进行中的登录并关闭临时回调监听器，返回更新后的 status。已有登录账号保留，可重新发起登录。
+
+### `GET /api/chatgpt/models`
+
+用当前订阅账号查询官方可用模型，返回 `{ models: [{ id, name }] }`。将模型 id 配置到 `.env` 的 `GPT_MODEL`，重启后生效。
+
+### `POST /api/chatgpt/logout`
+
+请求 `{ "accountId": "oaiapp_…" }`。停止订阅 Agent 任务，尝试撤销远程会话并清除该账号本地令牌，保留账号注册用于以后重登。返回 `{ revoked, message }`；`revoked=false` 时本地令牌仍已清除，用户需要在 ChatGPT 设置中确认断开应用。
 
 ## 项目
 
@@ -119,7 +154,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:5173/api/projects
 
 ### `PATCH /api/projects/:id/refs/:refId`
 
-参考图备注：`{ "note": "只参考配色" }`（≤ 200 字，空字符串清除）。备注会按「Reference N」编号随每次运行发给 Claude。返回更新后的项目。
+参考图备注：`{ "note": "只参考配色" }`（≤ 200 字，空字符串清除）。备注会按「Reference N」编号随每次运行发给 Agent。返回更新后的项目。
 
 ### `DELETE /api/projects/:id/refs/:refId`
 
@@ -166,7 +201,7 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 
 ### `POST /api/projects/:id/assets/:assetId/regenerate`
 
-用编辑后的 prompt 直接调用图像模型生成新版本（不经过 Claude，不消耗 tokens）：`{ "prompt": "…", "provider": "openai", "budget": {…} }`。返回 `{ jobId }`，进度同样从事件流读取；新素材待审核，`parentId` 指向原素材。用量记录的 `mode` 为 `manual`。
+用编辑后的 prompt 直接调用图像模型生成新版本（不经过 Agent，不消耗 Agent tokens）：`{ "prompt": "…", "provider": "openai", "budget": {…} }`。返回 `{ jobId }`，进度同样从事件流读取；新素材待审核，`parentId` 指向原素材。用量记录的 `mode` 为 `manual`。
 
 ### `POST /api/jobs/:id/stop`
 
@@ -259,6 +294,10 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 ```
 
 `cost` 中为 `null` 的部分表示缺少单价（如未配置 `IMAGE_PRICE_OPENAI`），未计入合计。运行状态：`running`、`ok`、`error`、`stopped`、`interrupted`。
+
+Seedream 的调用次数见 `images.byProvider.seedream`，可用 `IMAGE_PRICE_SEEDREAM` 设置美元/张的估算单价；留空时仍统计调用次数，图像费用为未知，不计入美元预算。方舟人民币单价需先换算，不应直接填写。实际费用以服务商账单为准。
+
+为兼容已有客户端，`claude`、`claudeRequests`、`cost.claude` 字段名保留，均表示 Agent 模型用量（包括 DeepSeek、GPT）；实际模型见 `claude.byModel`。GPT 运行额外记录 `agent: { provider: "gpt", model, authMode: "api_key" | "chatgpt" }`。订阅模式 token 正常累计，`cost.claude=0` 表示未按 Platform API 计费；图像费用继续统计。DeepSeek Flash 内置官方峰时价保守估算，GPT 默认模型按标准短上下文价估算；可分别用 `DEEPSEEK_PRICE`、`GPT_PRICE` 覆盖（输入、输出、缓存写、缓存读，美元/百万 tokens），与 `CLAUDE_PRICE` 分开生效。
 
 ## 示例：脚本批量生成并下载图集
 

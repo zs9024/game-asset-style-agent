@@ -13,6 +13,7 @@ configRouter.get("/api/config", (_req, res) => {
     assetTypes: ASSET_TYPES,
     sizePresets: SIZE_PRESETS,
     demo: config.demo,
+    agent: { provider: config.agentProvider, model: config.model, ...(config.agentProvider === "gpt" ? { authMode: config.gptAuthMode } : {}) },
     auth: !!config.accessToken,
     budget: resolveBudget(undefined),
     trashDays: Number(process.env.TRASH_DAYS ?? 7),

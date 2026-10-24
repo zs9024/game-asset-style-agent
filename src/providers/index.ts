@@ -2,11 +2,12 @@ import { gemini } from "./gemini.js";
 import { mock } from "./mock.js";
 import { openai } from "./openai.js";
 import { sdwebui } from "./sdwebui.js";
+import { seedream } from "./seedream.js";
 import type { ImageProvider } from "./types.js";
 
 export * from "./types.js";
 
-export const providers: ImageProvider[] = [openai, gemini, sdwebui, mock];
+export const providers: ImageProvider[] = [openai, gemini, seedream, sdwebui, mock];
 
 /** The named provider (must be configured), or the first available one. */
 export function getProvider(id: string | undefined): ImageProvider {

@@ -4,18 +4,18 @@ English · [中文](README.md)
 
 [![CI](https://github.com/wangchaozhi/game-asset-style-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wangchaozhi/game-asset-style-agent/actions/workflows/ci.yml)
 
-Upload a few style reference images and let Claude act as your **AI art director**. It distils a reusable **style guide** from the references (palette hex codes, technique, line work, lighting, camera, proportions), plans an asset list from your request, generates the images with an image model, **looks at every result and reviews it**, and redraws whatever drifts — so you end up with a set of assets that look like they come from the same game.
+Upload a few style reference images and let Claude, DeepSeek Flash or GPT act as your **AI art director**. It distils a reusable **style guide** from the references (palette hex codes, technique, line work, lighting, camera, proportions), plans an asset list from your request, generates the images with an image model, **looks at every result and reviews it**, and redraws whatever drifts — so you end up with a set of assets that look like they come from the same game.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png" />
   <img alt="Main screen: references and style guide, request and agent log, asset library" src="docs/screenshots/main-light.png" />
 </picture>
 
-<sub>Screenshots are from demo mode (`AGENT_MODE=demo`) with offline placeholder art; with Claude and an image model connected you get real generations. The UI is in Chinese.</sub>
+<sub>Screenshots are from demo mode (`AGENT_MODE=demo`) with offline placeholder art; with an agent and an image model connected you get real generations. The UI is in Chinese.</sub>
 
 ## Features
 
-- 🎨 **Style extraction** — Claude analyses the references and saves a structured style guide that every later generation in the project reuses
+- 🎨 **Style extraction** — The agent analyses the references and saves a structured style guide that every later generation in the project reuses
 - 🧩 **10 asset types** — characters, sprite sheets, enemies, item icons, tiles, props, backgrounds, UI, VFX, portraits
 - 🔁 **Self-review loop** — each image is scored 1–10 for consistency against the references, with automatic palette, tile-seam and frame-jitter checks attached. Seams, jitter and leftover backgrounds are fixed with free post-processing tools; anything else is redrawn with specific feedback (at most twice per asset)
 - 🎯 **Palette check** — ΔE distance in Lab space between an asset and the style palette: share of on-palette pixels and the main off-palette colours
@@ -24,7 +24,7 @@ Upload a few style reference images and let Claude act as your **AI art director
 - 🗂️ **Library management** — search and type filters, batch approve / reject / redraw with feedback / export, trash (restorable for 7 days), style-guide history with rollback, notes on reference images, project backup and restore
 - 📦 **Engine-ready exports** — ZIP per asset type (with common sizes, a manifest and Godot 4 `SpriteFrames` `.tres` for sprite sheets), plus texture atlases (PNG + TexturePacker JSON, loads directly in Phaser / PixiJS) with Phaser animation definitions
 - 💰 **Cost control** — live token / image usage and cost estimates, per-run caps on image calls and USD, automatic backoff on image-API rate limits
-- 🔌 **Pluggable image models** — OpenAI `gpt-image-1` (multi-reference edits), Google Gemini Image, local Stable Diffusion WebUI (AUTOMATIC1111 / Forge, optional IP-Adapter for reference style), offline mock
+- 🔌 **Pluggable image models** — OpenAI `gpt-image-1` (multi-reference edits), Google Gemini Image, Volcengine Doubao Seedream 5.0 Flash (up to 10 references), local Stable Diffusion WebUI (AUTOMATIC1111 / Forge, optional IP-Adapter for reference style), offline mock
 
 <img alt="Asset viewer: review and redraw, palette check, sprite jitter detection and alignment, game sizes" src="docs/screenshots/viewer.png" />
 
@@ -32,7 +32,7 @@ Upload a few style reference images and let Claude act as your **AI art director
 
 ```bash
 npm install
-cp .env.example .env   # set ANTHROPIC_API_KEY and one of OPENAI_API_KEY / GEMINI_API_KEY / SD_WEBUI_URL
+cp .env.example .env   # configure Claude, DeepSeek or GPT and an image provider (see below)
 npm start              # http://localhost:5173
 ```
 
@@ -42,7 +42,59 @@ Try the UI without any keys:
 AGENT_MODE=demo npm start
 ```
 
-Demo mode doesn't call Claude; a script runs the pipeline (style guide → generation → library) with local placeholder images.
+Demo mode doesn't call an agent model; a script runs the pipeline (style guide → generation → library) with local placeholder images.
+
+To use DeepSeek without an Anthropic key, set the following in `.env` and remove `AGENT_MODE=demo`:
+
+```dotenv
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=your-deepseek-key
+DEEPSEEK_MODEL=deepseek-flash
+```
+
+DeepSeek Flash analyses references, plans assets and visually reviews results. Configure Seedream, OpenAI, Gemini or local Stable Diffusion separately to generate real images; Mock can exercise the workflow. The default Anthropic-compatible endpoint is `https://api.deepseek.com/anthropic` (`DEEPSEEK_BASE_URL` overrides it). `DEEPSEEK_EFFORT` accepts `low`, `high` or `max` (default `high`). See the [official vision guide](https://api-docs.deepseek.com/guides/vision/); `deepseek-v4-pro` does not support vision. Switching agent services or models starts a fresh conversation while preserving the style guide and assets. Existing Claude configuration remains the default (`AGENT_PROVIDER=claude`).
+
+DeepSeek Flash token costs are estimated conservatively at peak rates. Override them with `DEEPSEEK_PRICE=input,output,cacheWrite,cacheRead` in USD per million tokens. The API retains the legacy `claude` usage/cost fields for both services; actual model names appear in `claude.byModel`.
+
+### GPT with an API key or ChatGPT plan
+
+Configure either billing mode in `.env`:
+
+```dotenv
+AGENT_PROVIDER=gpt
+GPT_AUTH_MODE=api_key
+GPT_MODEL=gpt-6.1-sol
+OPENAI_API_KEY=your-platform-api-key
+```
+
+API key usage is billed separately through OpenAI Platform; ChatGPT Plus does not cover these requests. Create a key in [OpenAI Platform](https://platform.openai.com/api-keys). `GPT_BASE_URL` overrides the API endpoint (default `https://api.openai.com/v1`); `GPT_EFFORT=low|medium|high|xhigh|max` defaults to `medium` and must be supported by your selected model.
+
+To use a ChatGPT subscription instead, set `GPT_AUTH_MODE=chatgpt`, remove `AGENT_MODE=demo`, restart, open `http://127.0.0.1:5173` and click **Continue with ChatGPT** in the request panel. Authorize ChatGPT plan usage in the new browser window. You can add/select separate account or workspace registrations, reauthorize them, sign out, or list models available to the active account. Put the selected model id in `GPT_MODEL` and restart. The app implements the [official OSS OAuth flow](https://developers.openai.com/siwc/token-sharing-open-source), validates identity tokens and granted scopes, and renews access tokens. It uses its own credentials; it does not read Codex login files. Availability depends on your account, workspace and remaining plan allowance. There is no automatic fallback to paid API-key requests. Subscription mode always uses the official Responses endpoint and ignores `GPT_BASE_URL`.
+
+For terminal login, run `npm run chatgpt:login` and open the printed URL on the same machine; use `-- --new` to register another account or `-- --account oaiapp_…` to reauthorize a saved registration. Credentials are stored under `DATA_DIR/auth/chatgpt.json`, outside project backups, with owner-only file permissions on Unix. Restrict data-directory access on Windows. Browser login management accepts direct loopback requests only. For Docker or remote self-hosting, complete login locally and securely transfer the protected credential file to the instance's `DATA_DIR/auth/` following the [official self-hosted guide](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms). Only run one instance against a data directory to avoid rotating-token conflicts. Signing out attempts remote revocation and clears local tokens; if revocation cannot be confirmed, disconnect the app in ChatGPT Settings.
+
+Both modes support reference analysis, tools and visual reviews. Image generation still uses the separately configured image provider; subscription credentials never serve as image-provider keys. See the [subscription route limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations). GPT API prices are estimated at the default model's Standard short-context rates; override with `GPT_PRICE=input,output,cacheWrite,cacheRead` in USD per million tokens. Subscription requests retain token counts with `cost.claude=0` to indicate no Platform API token charges; image charges remain separate. Runs record `agent.authMode`; the legacy `claude` fields cover all agent providers. Changing providers, models, billing modes or ChatGPT accounts resets conversation history while preserving the style guide and assets.
+
+### Generate images with Seedream 5.0 Flash
+
+No OpenAI or Gemini image key is required:
+
+```dotenv
+ARK_API_KEY=your-volcengine-ark-key
+SEEDREAM_MODEL=doubao-seedream-5-0-flash-260915
+SEEDREAM_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+SEEDREAM_SIZE=2K
+SEEDREAM_WATERMARK=false
+SEEDREAM_RESPONSE_FORMAT=b64_json
+```
+
+Keep your agent configuration, remove `AGENT_MODE=demo`, restart and select **Doubao Seedream 5.0 Flash** in the image-provider picker. HTTP run and manual-regeneration requests accept `"provider": "seedream"`. When it is the first available image provider, Seedream is selected automatically. A GPT Platform API key also enables the OpenAI image provider, so explicitly select Seedream in that case.
+
+The provider sends JSON requests with inline Base64 references to `/images/generations`. It defaults to a single Base64 PNG output; `SEEDREAM_RESPONSE_FORMAT=url` downloads the temporary URL immediately without forwarding the Ark key. Image-download retries do not re-submit the generation. Group generation and layer decomposition are not enabled. See the [official Flash/Pro guide](https://docs.volcengine.com/docs/ark/seedream-5-0-pro?lang=zh) and [API reference](https://docs.volcengine.com/docs/ark/image-generation-api?lang=zh).
+
+`SEEDREAM_SIZE` accepts `1K`, `1.5K` or `2K` (default). Square outputs are 1024×1024, 1536×1536 or 2048×2048 respectively; landscape outputs are 1280×720, 1920×1080 or 2560×1440, and portrait outputs swap width and height. Sprite strips use one square cell per frame (2–16 frames) within the model's pixel/ratio limits. Up to 10 references are sent: existing consistency assets first, then project style references. Omitted references are reported in the job log.
+
+Native transparency requires a single alpha reference, while project references are flattened JPEGs. Cutout assets therefore use a flat white backdrop and the existing local background-removal step; originals remain available. Visible watermarks are disabled by default and can be enabled with `SEEDREAM_WATERMARK=true`. Set `IMAGE_PRICE_SEEDREAM` in USD per generated image for cost estimates; leave it blank to track calls with unknown cost, excluded from the dollar budget. Convert RMB prices before entering them. Actual resolution/reference-related charges follow the Ark bill. Keep `ARK_API_KEY` in the server environment, never in frontend code or chat.
 
 ## Deployment
 
@@ -100,12 +152,12 @@ Tests use a temporary `DATA_DIR`; API tests start the app in demo mode on a rand
 
 ## How it works
 
-The agent is a hand-written tool-use loop on the Anthropic TypeScript SDK (`src/agent/loop.ts`), using `claude-opus-5-5` with adaptive thinking, prompt caching and server-side refusal fallback. Its tools:
+The agent is a hand-written tool-use loop on the Anthropic TypeScript SDK (`src/agent/loop.ts`), using `claude-opus-5-5` with adaptive thinking, prompt caching and server-side refusal fallback. DeepSeek uses the same loop through its Anthropic-compatible endpoint, with service-specific request parameters. Its tools:
 
 | Tool | Purpose |
 |---|---|
 | `save_style_guide` | Save the style guide distilled from the references (incl. an English `prompt_prefix`) |
-| `generate_image` | Call the image model with the references (and optional approved assets) attached; the result image and automatic checks go back to Claude |
+| `generate_image` | Call the image model with the references (and optional approved assets) attached; the result image and automatic checks go back to the agent |
 | `review_asset` | Record approve / reject, a consistency score and the reason |
 | `fix_tile_seams` | Cross-fade a tile's edges into a seamless new version (no image-model call) |
 | `align_sprite_frames` | Align a sprite sheet's frames on a shared anchor (no image-model call) |

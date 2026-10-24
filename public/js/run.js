@@ -209,7 +209,7 @@ export function bindRun() {
     .map((p) => `<option value="${p.id}" ${p.available ? "" : "disabled"}>${esc(p.label)}${p.available ? "" : "（未配置）"}</option>`)
     .join("");
   ps.value = state.config.providers.find((p) => p.available)?.id;
-  if (state.config.demo) logEntry("status", "当前为演示模式（AGENT_MODE=demo）：不调用 Claude，仅走一遍流水线。");
+  if (state.config.demo) logEntry("status", "当前为演示模式（AGENT_MODE=demo）：不调用 Agent，仅走一遍流水线。");
 
   chips.addEventListener("click", (e) => {
     const b = e.target.closest(".chip");
