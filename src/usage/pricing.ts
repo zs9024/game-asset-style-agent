@@ -37,11 +37,13 @@ export function modelPrice(model: string, env: Env = process.env): ModelPrice | 
 }
 
 /** Providers that run locally cost nothing per image unless a price is configured. */
-const LOCAL_PROVIDERS = new Set(["mock", "sdwebui"]);
+const LOCAL_PROVIDERS = new Set(["mock", "sdwebui", "codex_image", "chatgpt_manual"]);
 
 /** Per-image price for a provider, from IMAGE_PRICE_<PROVIDER> (USD). Mock and local SD are free by default. */
 export function imagePrice(provider: string, env: Env = process.env): number | null {
   if (provider === "mock") return 0;
+  // These consume a subscription / human workflow, never Platform per-image API charges.
+  if (provider === "codex_image" || provider === "chatgpt_manual") return 0;
   const v = env[`IMAGE_PRICE_${provider.toUpperCase()}`];
   if (v === undefined || v.trim() === "") return LOCAL_PROVIDERS.has(provider) ? 0 : null;
   const n = Number(v);

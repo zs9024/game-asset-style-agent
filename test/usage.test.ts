@@ -50,6 +50,8 @@ describe("imagePrice", () => {
     assert.equal(imagePrice("gemini", { IMAGE_PRICE_GEMINI: "-1" }), null);
     assert.equal(imagePrice("seedream", {}), null);
     assert.equal(imagePrice("seedream", { IMAGE_PRICE_SEEDREAM: "0.02" }), 0.02);
+    assert.equal(imagePrice("codex_image", { IMAGE_PRICE_CODEX_IMAGE: "100" }), 0, "subscription generations are not priced as Platform API images");
+    assert.equal(imagePrice("chatgpt_manual", {}), 0);
   });
 });
 

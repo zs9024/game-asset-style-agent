@@ -27,7 +27,7 @@
 - 🛠️ **素材工作台**：精灵表切帧与防抖对齐、瓦片一键无缝化、去背景、游戏尺寸缩放、版本对比（滑块 / 并排）、改 prompt 直接重生成（不经过 Agent）
 - 🗂️ **素材管理**：搜索与类型筛选、批量通过 / 驳回 / 按意见重画 / 导出、回收站（7 天可恢复）、风格指南历史与回滚、参考图备注、项目备份与恢复
 - ⚡ 并行生成、SSE 实时日志（含思考摘要）、可随时停止、刷新页面自动续接任务、后台完成提醒、查看器快捷键
-- 🔌 图像模型可插拔：OpenAI `gpt-image-1`（多图参考 edits）、Google Gemini Image、火山方舟 Doubao Seedream 5.0 Flash（最多 10 张参考图）、本地 Stable Diffusion WebUI（AUTOMATIC1111 / Forge，可选 IP-Adapter 参考图风格）、离线 Mock
+- 🔌 图像模型可插拔：OpenAI GPT Image 2.5 Flare / Sunburst（API）、Google Gemini Image、火山方舟 Doubao Seedream 5.0 Flash（最多 10 张参考图）、本地 Stable Diffusion WebUI、Codex 内置订阅生图、ChatGPT 人工接力、离线 Mock
 
 <img alt="素材查看器：审核与按意见重画、色板一致性、精灵帧抖动检测与对齐、游戏尺寸" src="docs/screenshots/viewer.png" />
 
@@ -91,6 +91,54 @@ GPT_MODEL=gpt-6.1-sol
 登录凭证保存在 `DATA_DIR/auth/chatgpt.json`（默认 `data/auth/chatgpt.json`），按账号分别保存，不包含在项目备份中。保护整个数据目录，不要上传或共享该文件；Unix 下以 `0600` 权限原子写入，Windows 下须限制数据目录访问权限。退出会尝试撤销远程会话并清除本地令牌。界面登录管理仅接受本机直接请求；Docker/远程自托管时，先在本机完成登录，再按照[官方自托管指南](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)安全转移该凭证文件到服务器的 `DATA_DIR/auth/`。同一数据目录只运行一个实例，避免刷新令牌冲突。
 
 GPT API token 费用按默认模型的标准短上下文价估算，可用 `GPT_PRICE=输入,输出,缓存写,缓存读` 覆盖（美元/百万 tokens）；长上下文等附加费用以平台账单为准。订阅模式保留 token 统计，Agent API 费用记为 0，表示未按 Platform API 计费；图像费用继续单独统计。切换服务商、模型、鉴权模式或 ChatGPT 账号会开启新对话，保留风格指南与素材。
+
+### 使用 Codex 订阅生图或 ChatGPT 人工接力
+
+两个通道均不需要 OpenAI API key，继续使用已配置的 Agent 来规划和审核。`IMAGE_PROVIDER` 设置默认图像通道，界面和每次 HTTP 请求的 `provider` 仍可显式选择其他已启用通道。
+
+**Codex 内置生图**：
+
+```dotenv
+IMAGE_PROVIDER=codex_image
+CODEX_IMAGE_AUTH_MODE=chatgpt
+CODEX_IMAGE_VARIANT=auto
+CODEX_IMAGE_TIMEOUT_MS=300000
+CODEX_IMAGE_CONCURRENCY=1
+CODEX_IMAGE_FALLBACK=none
+```
+
+服务所在机器需安装 Codex CLI，并以运行服务的同一系统账号执行 `codex login`，使用 ChatGPT 订阅登录。`CODEX_IMAGE_BIN` 默认 `codex`；Windows 也可指定 `codex.exe` 或官方 `codex.js` 启动器路径。可用 `CODEX_IMAGE_HOME` 指向该 CLI 的凭证目录；这是 Codex 自己的登录，与项目页面上的 Continue with ChatGPT OAuth 登录分别管理。
+
+通道在独立任务目录中调用 `codex exec`，通过 `$imagegen` 使用内置生图，传入参考图与绘图要求，要求把实际生成图片复制为 `asset.png`。只有进程成功退出且文件通过图片校验后才入库；仅回复文字不会被当作生图成功。项目 API key 和 OAuth 令牌不会传入该进程，使用 workspace-write 沙箱，不自动提升权限。超时或停止会终止工作进程；权限不足、CLI 未登录或没有内置生图能力时会报错。首次使用建议先生成一张验证本机 CLI/订阅可用性。
+
+**Flare / Sunburst 的选择边界**：当前本机 imagegen skill 的内置工具未暴露图像模型参数，官方 Codex 文档也没有给出订阅生图的 Flare/Sunburst 选择开关，因此 `CODEX_IMAGE_VARIANT` 仅接受 `auto`；填 `flare` 或 `sunburst` 会明确报错，不会假装已切换。`CODEX_IMAGE_AGENT_MODEL` 可指定执行任务的语言模型，不能用于指定图像模型。需要精确选择图像模型时，使用 API 通道（需要独立计费的 API key）：
+
+```dotenv
+IMAGE_PROVIDER=openai
+OPENAI_API_KEY=你的API密钥
+OPENAI_IMAGE_MODEL=gpt-image-2.5-flare
+# 或 gpt-image-2.5-sunburst
+```
+
+内置生图的能力和额度以 Codex/账号为准，参见 [Codex 生图](https://learn.chatgpt.com/docs/image-generation)；API 模型参数参见 [官方图像生成说明](https://developers.openai.com/api/docs/guides/tools-image-generation)。默认 API 图像模型已改为 Flare，避免继续使用已停用的 `gpt-image-1`。
+
+默认 `CODEX_IMAGE_FALLBACK=none`，生图失败就报告错误。只有显式配置 `seedream` 时才会调用方舟、消耗对应额度；配置 `chatgpt_manual` 则进入人工接力，不会自动发送付费 API 请求。真正使用的备用通道会记录在素材的 `provider` 与用量统计中。仅想让通道出现在下拉框而不设为默认，可设置 `CODEX_IMAGE_ENABLED=true`。
+
+**人工接力**：
+
+```dotenv
+IMAGE_PROVIDER=chatgpt_manual
+MANUAL_IMAGE_TIMEOUT_MS=86400000
+```
+
+1. Agent 调用生成工具后，需求面板会出现「ChatGPT 人工接力」卡片，并等待图片。
+2. 下载 ZIP（包含 `prompt.txt`、参考图、manifest 和操作说明），或复制提示词。
+3. 在 ChatGPT 中上传参考图、用提示词生成图片，再下载完整原图。
+4. 回到接力卡片上传 PNG/JPEG/WebP（单张最大 20 MB），原 Agent 任务会继续看图、评分和审核；不通过时仍可提出意见或再次接力。
+
+刷新页面不会丢失接力卡片。默认最多等待 24 小时，可用 `MANUAL_IMAGE_TIMEOUT_MS` 调整（100 ms–7 天）；「取消并停止本次运行」会停止该项目原任务。提示词和参考图持久保存在项目的 `handoffs/` 目录。原运行中断、超时或服务重启后，仍可上传结果，再点击「继续审核」创建新的导入/审核任务；已入库的同一接力结果不会重复入库。若 Agent 凭证不可用，图片仍保留为待审核素材；demo 下接续只入库，交给人工审核。接力资料不包含在现有项目备份 ZIP 中。
+
+仅想在下拉框启用人工通道可设置 `MANUAL_IMAGE_ENABLED=true`。Codex 订阅生图和人工接力都计入图像次数预算，但不按 Platform API 单价估算；Codex 生图实际消耗订阅额度/credits，人工流程的使用量以 ChatGPT 页面为准。图像次数上限、停止和后处理仍沿用项目原有逻辑。
 
 ### 使用 Seedream 5.0 Flash 出图
 
@@ -204,7 +252,8 @@ src/
     events.ts / jobs.ts    任务注册、事件广播、启动与收尾
     demo.ts / manual.ts    无 key 演示模式 / 改 prompt 直接重生成
     budget.ts              单次运行预算
-  providers/             图像通道：openai · gemini · seedream · sdwebui · mock
+  providers/             图像通道：openai · gemini · seedream · sdwebui · codexImage · chatgptManual · mock
+  handoff/               人工生图接力：提示词与参考图导出、等待、上传与中断后接续
   openai/                ChatGPT OAuth 登录、账号与令牌管理、终端登录入口
   image/                 sharp 图像处理：io · background（抠图）· spriteSheet · tiles · sizes
   export/                ZIP 写入与素材包组装

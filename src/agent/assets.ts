@@ -6,6 +6,7 @@ import type { ImageInput, ImageProvider } from "../providers/types.js";
 import { extFor, loadProject, newId, readProjectFile, updateProject, writeProjectFile } from "../store/index.js";
 import type { Asset, Project } from "../store/types.js";
 import { sliceAssetFrames } from "../ops/assetOps.js";
+import { markHandoffImported } from "../handoff/service.js";
 import { addImageCall } from "../usage/record.js";
 import { BudgetExceededError, budgetBlock } from "./budget.js";
 import { type Job, emit, reportUsage } from "./events.js";
@@ -65,6 +66,8 @@ async function generateReserved(job: Job, provider: ImageProvider, input: Genera
         aspect: input.aspect,
         transparent: input.transparent_background,
         frames: input.asset_type === "sprite_sheet" ? (input.frames ?? 4) : undefined,
+        context: { projectId: job.projectId, jobId: job.id, input },
+        onHandoff: (handoff) => emit(job, { type: "handoff", handoff }),
         onNotice: (text) => emit(job, { type: "status", text: `「${input.name}」${text}` }),
         onRetry: ({ attempt, delayMs, reason }) =>
           emit(job, { type: "status", text: `「${input.name}」图像接口${reason.includes("429") ? "限流" : "出错"}（${reason}），${Math.ceil(delayMs / 1000)} 秒后第 ${attempt} 次重试` }),
@@ -76,7 +79,9 @@ async function generateReserved(job: Job, provider: ImageProvider, input: Genera
     reportUsage(job);
     throw err;
   }
-  addImageCall(job.usage, provider.id, true);
+  const actualProvider = img.providerId ?? provider.id;
+  const handoffId = img.handoffId;
+  addImageCall(job.usage, actualProvider, true);
   reportUsage(job);
 
   const id = newId("ast");
@@ -98,7 +103,8 @@ async function generateReserved(job: Job, provider: ImageProvider, input: Genera
     mime: img.mime,
     status: "pending_review",
     runId: job.id,
-    provider: provider.id,
+    provider: actualProvider,
+    ...(handoffId ? { handoffId } : {}),
     createdAt: new Date().toISOString(),
     originalFile,
     parentId: input.replaces_asset_id,
@@ -117,6 +123,7 @@ async function generateReserved(job: Job, provider: ImageProvider, input: Genera
   await updateProject(project.id, (p) => {
     p.assets.push(asset);
   });
+  if (handoffId) await markHandoffImported(project.id, handoffId, asset.id).catch(() => emit(job, { type: "status", text: "素材已入库，接力状态记录更新失败，可在素材库中查看" }));
   emit(job, { type: "asset", asset });
   return { asset, image: img };
 }

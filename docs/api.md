@@ -35,6 +35,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:5173/api/projects
 ```json
 {
   "providers": [{ "id": "openai", "label": "OpenAI gpt-image", "available": true }],
+  "defaultProvider": "codex_image",
   "assetTypes": { "item_icon": "道具 / 装备图标" },
   "sizePresets": { "item_icon": ["16", "32", "64", "128"] },
   "demo": false,
@@ -44,7 +45,11 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:5173/api/projects
 }
 ```
 
-图像通道 id：`openai`、`gemini`、`seedream`、`sdwebui`、`mock`。素材类型：`character`、`sprite_sheet`、`enemy`、`item_icon`、`tile`、`prop`、`background`、`ui`、`vfx`、`portrait`。
+图像通道 id：`openai`、`gemini`、`seedream`、`sdwebui`、`codex_image`、`chatgpt_manual`、`mock`。素材类型：`character`、`sprite_sheet`、`enemy`、`item_icon`、`tile`、`prop`、`background`、`ui`、`vfx`、`portrait`。
+
+`IMAGE_PROVIDER` 选择默认图像通道；留空时选择第一个可用通道。`codex_image` 需要 `CODEX_IMAGE_ENABLED=true` 或作为默认通道，以及服务所在机器的 Codex ChatGPT 登录；`chatgpt_manual` 需要 `MANUAL_IMAGE_ENABLED=true` 或作为默认通道。Codex 只接受 `CODEX_IMAGE_AUTH_MODE=chatgpt` 和 `CODEX_IMAGE_VARIANT=auto`，支持 `CODEX_IMAGE_BIN`、`CODEX_IMAGE_HOME`、`CODEX_IMAGE_AGENT_MODEL`（语言模型）、`CODEX_IMAGE_TIMEOUT_MS`、`CODEX_IMAGE_CONCURRENCY`。`CODEX_IMAGE_FALLBACK=none|seedream|chatgpt_manual` 默认 `none`，只有显式选择备用通道才会切换。
+
+`imageCapabilities` 额外返回 `codex_image: { modelSelection: false, variant: "auto", billing: "subscription" }`、`openai: { modelSelection: true, model }`、`chatgpt_manual: { billing: "external" }`。订阅内置 imagegen 没有公开 Flare/Sunburst 选择参数；API 通道可通过 `OPENAI_IMAGE_MODEL=gpt-image-2.5-flare|gpt-image-2.5-sunburst` 精确选择，默认 Flare。
 
 Seedream 配置 `ARK_API_KEY` 后可用，默认模型 `doubao-seedream-5-0-flash-260915`；可通过 `SEEDREAM_MODEL`、`SEEDREAM_BASE_URL` 覆盖。`SEEDREAM_SIZE=1K|1.5K|2K`（默认 `2K`）按素材横竖比例或精灵帧数计算像素宽高。`SEEDREAM_RESPONSE_FORMAT=b64_json|url`（默认 `b64_json`）返回的图片均保存到项目本地，`SEEDREAM_WATERMARK=false|true`（默认 `false`）控制可见水印。最多发送 10 张参考图，已有素材参考优先，超限时日志提示。透明素材先生成纯白背景，再复用本地去背景处理。运行与直接重生成的 `provider` 均可传 `"seedream"`，不需要新增调用接口。
 
@@ -160,6 +165,30 @@ Seedream 配置 `ARK_API_KEY` 后可用，默认模型 `doubao-seedream-5-0-flas
 
 删除参考图及其文件，返回更新后的项目。
 
+## 人工生图接力
+
+选择 `provider=chatgpt_manual` 时，Agent 在生成工具调用处等待。下载提示词/参考图，在 ChatGPT 生图后上传结果，原 Agent 会继续审核。可同时存在多个接力卡片。任务、提示词与参考图保存在项目 `handoffs/` 中（不包含在现有备份 ZIP 中）；刷新后可恢复列表。默认等待 24 小时，`MANUAL_IMAGE_TIMEOUT_MS` 可调整（100–604800000 毫秒）。
+
+### `GET /api/projects/:id/handoffs`
+
+返回 `{ tasks: [{ id, projectId, jobId, name, createdAt, expiresAt, status, prompt, aspect, transparent, frames?, referenceCount, assetId?, live }] }`，最多最近 50 条。id 格式 `hnd_…`；状态为 `waiting`、`submitted`、`cancelled`、`expired`、`imported`。`live=true` 表示原任务仍在本实例等待，上传后会自动继续；`false` 表示上传后可能需要手动接续。
+
+### `GET /api/projects/:id/handoffs/:taskId/package.zip`
+
+下载接力包：`prompt.txt`、`README.md`、`manifest.json`、`references/ref-N.jpg|png|webp|gif`。参考图顺序为已有素材参考优先，随后为项目风格参考图。包内不含任何模型凭证。
+
+### `POST /api/projects/:id/handoffs/:taskId/result`
+
+`multipart/form-data`，单文件字段 `image`，最大 20 MB，接受实际可解码的 PNG/JPEG/WebP。返回 `{ task, needsResume }`。正在等待的原任务自动取得图片并继续，`needsResume=false`；原任务已中断时 `needsResume=true`，随后调用 resume。重复提交返回 409；无效图片返回 400，不改变原任务。
+
+### `POST /api/projects/:id/handoffs/:taskId/cancel`
+
+请求 `{}`，取消此接力并停止原任务，返回 `{ task }`。导出的提示词、参考图保留，之后仍可上传并接续。
+
+### `POST /api/projects/:id/handoffs/:taskId/resume`
+
+请求 `{}`，为已上传且原运行不再活动的接力结果启动导入/审核任务，返回 `{ jobId }`；有其他运行时返回 409 和 `jobId`。通过 SSE 跟踪进度，先入库再把图片交给 Agent 审核；同一接力结果不重复入库，审核阶段不重新出图。demo 下只导入为待人工审核素材，Agent 凭证不可用时已导入图片仍保留。
+
 ## 运行
 
 ### `POST /api/projects/:id/run`
@@ -192,6 +221,7 @@ Server-Sent Events。连接后先回放已发生的事件，再实时推送，�
 | `style` | `styleGuide` | 风格指南已保存 |
 | `asset` | `asset` | 新素材或素材状态变化 |
 | `usage` | `usage` | 本次运行的最新用量（只回放最后一条） |
+| `handoff` | `handoff` | 人工接力卡片创建或状态变化，字段同 handoffs 列表（不含 `live`） |
 | `error` | `message` | 运行出错 |
 | `done` | | 结束 |
 
@@ -296,6 +326,8 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 `cost` 中为 `null` 的部分表示缺少单价（如未配置 `IMAGE_PRICE_OPENAI`），未计入合计。运行状态：`running`、`ok`、`error`、`stopped`、`interrupted`。
 
 Seedream 的调用次数见 `images.byProvider.seedream`，可用 `IMAGE_PRICE_SEEDREAM` 设置美元/张的估算单价；留空时仍统计调用次数，图像费用为未知，不计入美元预算。方舟人民币单价需先换算，不应直接填写。实际费用以服务商账单为准。
+
+`images.byProvider.codex_image` 与 `chatgpt_manual` 分别记录内置订阅出图、人工上传次数，不折算为 Platform API 图像费用，但仍占用图像次数预算。显式备用通道成功时按实际来源记录（例如 `seedream`），素材的 `provider` 同步反映实际来源；人工结果还带 `handoffId`。
 
 为兼容已有客户端，`claude`、`claudeRequests`、`cost.claude` 字段名保留，均表示 Agent 模型用量（包括 DeepSeek、GPT）；实际模型见 `claude.byModel`。GPT 运行额外记录 `agent: { provider: "gpt", model, authMode: "api_key" | "chatgpt" }`。订阅模式 token 正常累计，`cost.claude=0` 表示未按 Platform API 计费；图像费用继续统计。DeepSeek Flash 内置官方峰时价保守估算，GPT 默认模型按标准短上下文价估算；可分别用 `DEEPSEEK_PRICE`、`GPT_PRICE` 覆盖（输入、输出、缓存写、缓存读，美元/百万 tokens），与 `CLAUDE_PRICE` 分开生效。
 

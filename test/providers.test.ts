@@ -68,6 +68,9 @@ describe("getProvider", () => {
     delete process.env.GOOGLE_API_KEY;
     delete process.env.SD_WEBUI_URL;
     delete process.env.ARK_API_KEY;
+    delete process.env.IMAGE_PROVIDER;
+    delete process.env.CODEX_IMAGE_ENABLED;
+    delete process.env.MANUAL_IMAGE_ENABLED;
     assert.equal(getProvider(undefined).id, "mock");
     assert.equal(getProvider("nope").id, "mock");
     process.env.GEMINI_API_KEY = "k";
@@ -79,7 +82,7 @@ describe("getProvider", () => {
     assert.throws(() => getProvider("openai"), /未配置/);
   });
 
-  it("exposes openai, gemini, seedream, sdwebui and mock", () => {
-    assert.deepEqual(providers.map((p) => p.id), ["openai", "gemini", "seedream", "sdwebui", "mock"]);
+  it("exposes API, local, Codex and human image providers", () => {
+    assert.deepEqual(providers.map((p) => p.id), ["openai", "gemini", "seedream", "sdwebui", "codex_image", "chatgpt_manual", "mock"]);
   });
 });

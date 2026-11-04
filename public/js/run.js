@@ -66,6 +66,10 @@ export function handleEvent(e) {
       logEntry("error", esc(e.message));
       break;
     case "usage": renderLiveUsage(e.usage); break;
+    case "handoff":
+      logEntry("status", `人工接力：${esc(e.handoff.name)} · ${esc(e.handoff.status)}`);
+      document.dispatchEvent(new CustomEvent("gaa:handoff-change"));
+      break;
     case "done": finishJob(); break;
   }
 }
@@ -208,7 +212,7 @@ export function bindRun() {
   ps.innerHTML = state.config.providers
     .map((p) => `<option value="${p.id}" ${p.available ? "" : "disabled"}>${esc(p.label)}${p.available ? "" : "（未配置）"}</option>`)
     .join("");
-  ps.value = state.config.providers.find((p) => p.available)?.id;
+  ps.value = state.config.defaultProvider ?? state.config.providers.find((p) => p.available)?.id;
   if (state.config.demo) logEntry("status", "当前为演示模式（AGENT_MODE=demo）：不调用 Agent，仅走一遍流水线。");
 
   chips.addEventListener("click", (e) => {

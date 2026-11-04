@@ -3,6 +3,15 @@ export type Aspect = "square" | "landscape" | "portrait";
 export interface ImageInput {
   data: Buffer;
   mime: string;
+  /** Actual source when an explicitly configured fallback supplied the image. */
+  providerId?: string;
+  handoffId?: string;
+}
+
+export interface ImageHandoff {
+  id: string; projectId: string; jobId: string; name: string; createdAt: string; expiresAt: string;
+  status: "waiting" | "submitted" | "cancelled" | "expired" | "imported";
+  prompt: string; aspect: Aspect; transparent: boolean; frames?: number; referenceCount: number; assetId?: string;
 }
 
 export interface GenerateRequest {
@@ -16,6 +25,8 @@ export interface GenerateRequest {
   onRetry?: (info: import("./retry.js").RetryInfo) => void;
   /** Provider-specific adjustments worth showing in the job log, e.g. reference limits. */
   onNotice?: (message: string) => void;
+  context?: { projectId: string; jobId: string; input: import("../agent/schemas.js").GenerateInput };
+  onHandoff?: (handoff: ImageHandoff) => void;
 }
 
 export interface ImageProvider {

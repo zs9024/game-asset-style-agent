@@ -63,7 +63,7 @@ describe("OpenAI provider", () => {
     assert.equal(url, "https://api.openai.com/v1/images/edits");
     assert.equal((init.headers as Record<string, string>).Authorization, "Bearer sk-test");
     const form = init.body as FormData;
-    assert.equal(form.get("model"), "gpt-image-1");
+    assert.equal(form.get("model"), "gpt-image-2.5-flare");
     assert.equal(form.get("size"), "1536x1024");
     assert.equal(form.get("background"), "transparent");
     assert.equal(form.get("prompt"), "A sword icon");

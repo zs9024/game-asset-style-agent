@@ -7,7 +7,8 @@ import { bindStyleGuide } from "./styleGuide.js";
 import { bindAssets } from "./assets.js";
 import { bindViewer, openViewer } from "./viewer/index.js";
 import { bindBatch } from "./batch.js";
-import { bindRun, resumeJob } from "./run.js";
+import { attachJob, bindRun, resumeJob } from "./run.js";
+import { bindHandoffs } from "./handoffs.js";
 import { bindAgentConnection } from "./agentConnection.js";
 
 // Safety net: an API failure in any handler that doesn't catch it still reaches the user.
@@ -28,6 +29,7 @@ async function init() {
     });
   }
   bindRun();
+  bindHandoffs(attachJob);
   bindProjects(resumeJob);
   bindRefs();
   bindStyleGuide();

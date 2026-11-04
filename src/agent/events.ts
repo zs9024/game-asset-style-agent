@@ -12,6 +12,7 @@ export type AgentEvent =
   | { type: "asset"; asset: Asset }
   | { type: "error"; message: string }
   | { type: "usage"; usage: RunUsage }
+  | { type: "handoff"; handoff: import("../providers/types.js").ImageHandoff }
   | { type: "done"; summary?: string };
 
 export interface Job {
@@ -43,6 +44,10 @@ export interface RunOptions {
   continueConversation?: boolean;
   /** regenerate one asset from an edited prompt, without Claude */
   manual?: { assetId: string; prompt: string };
+  /** Import a completed handoff after its original in-memory job was interrupted. */
+  handoffResume?: { taskId: string };
+  /** Inspect these existing images without regenerating them first. */
+  reviewAssetIds?: string[];
   /** per-run limits; missing fields fall back to RUN_MAX_IMAGES / RUN_MAX_USD */
   budget?: { maxImages?: unknown; maxUsd?: unknown };
 }

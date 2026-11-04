@@ -8,7 +8,7 @@ export const openai: ImageProvider = {
   available: () => !!process.env.OPENAI_API_KEY,
   async generate(req, signal) {
     const size = { square: "1024x1024", landscape: "1536x1024", portrait: "1024x1536" }[req.aspect];
-    const model = process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-1";
+    const model = process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2.5-flare";
     const base = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
     const auth = { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` };
     const background = req.transparent ? "transparent" : "opaque";

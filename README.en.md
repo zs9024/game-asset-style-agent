@@ -24,7 +24,7 @@ Upload a few style reference images and let Claude, DeepSeek Flash or GPT act as
 - 🗂️ **Library management** — search and type filters, batch approve / reject / redraw with feedback / export, trash (restorable for 7 days), style-guide history with rollback, notes on reference images, project backup and restore
 - 📦 **Engine-ready exports** — ZIP per asset type (with common sizes, a manifest and Godot 4 `SpriteFrames` `.tres` for sprite sheets), plus texture atlases (PNG + TexturePacker JSON, loads directly in Phaser / PixiJS) with Phaser animation definitions
 - 💰 **Cost control** — live token / image usage and cost estimates, per-run caps on image calls and USD, automatic backoff on image-API rate limits
-- 🔌 **Pluggable image models** — OpenAI `gpt-image-1` (multi-reference edits), Google Gemini Image, Volcengine Doubao Seedream 5.0 Flash (up to 10 references), local Stable Diffusion WebUI (AUTOMATIC1111 / Forge, optional IP-Adapter for reference style), offline mock
+- 🔌 **Pluggable image models** — OpenAI GPT Image 2.5 Flare / Sunburst (API), Google Gemini Image, Volcengine Doubao Seedream 5.0 Flash, local Stable Diffusion WebUI, built-in Codex subscription image generation, ChatGPT human handoff, offline mock
 
 <img alt="Asset viewer: review and redraw, palette check, sprite jitter detection and alignment, game sizes" src="docs/screenshots/viewer.png" />
 
@@ -74,6 +74,29 @@ To use a ChatGPT subscription instead, set `GPT_AUTH_MODE=chatgpt`, remove `AGEN
 For terminal login, run `npm run chatgpt:login` and open the printed URL on the same machine; use `-- --new` to register another account or `-- --account oaiapp_…` to reauthorize a saved registration. Credentials are stored under `DATA_DIR/auth/chatgpt.json`, outside project backups, with owner-only file permissions on Unix. Restrict data-directory access on Windows. Browser login management accepts direct loopback requests only. For Docker or remote self-hosting, complete login locally and securely transfer the protected credential file to the instance's `DATA_DIR/auth/` following the [official self-hosted guide](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms). Only run one instance against a data directory to avoid rotating-token conflicts. Signing out attempts remote revocation and clears local tokens; if revocation cannot be confirmed, disconnect the app in ChatGPT Settings.
 
 Both modes support reference analysis, tools and visual reviews. Image generation still uses the separately configured image provider; subscription credentials never serve as image-provider keys. See the [subscription route limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations). GPT API prices are estimated at the default model's Standard short-context rates; override with `GPT_PRICE=input,output,cacheWrite,cacheRead` in USD per million tokens. Subscription requests retain token counts with `cost.claude=0` to indicate no Platform API token charges; image charges remain separate. Runs record `agent.authMode`; the legacy `claude` fields cover all agent providers. Changing providers, models, billing modes or ChatGPT accounts resets conversation history while preserving the style guide and assets.
+
+### Codex subscription images and human handoff
+
+Select a default with `IMAGE_PROVIDER`; the UI and per-run HTTP `provider` can still select another enabled channel. For built-in Codex images:
+
+```dotenv
+IMAGE_PROVIDER=codex_image
+CODEX_IMAGE_AUTH_MODE=chatgpt
+CODEX_IMAGE_VARIANT=auto
+CODEX_IMAGE_TIMEOUT_MS=300000
+CODEX_IMAGE_CONCURRENCY=1
+CODEX_IMAGE_FALLBACK=none
+```
+
+Install Codex CLI and run `codex login` as the same OS user that runs the server, using ChatGPT sign-in. `CODEX_IMAGE_BIN` defaults to `codex` and can point to `codex.exe` or the official `codex.js` launcher on Windows; `CODEX_IMAGE_HOME` can select its credential directory. CLI authentication is separate from the app's Continue with ChatGPT OAuth connection. The provider runs `codex exec` in an isolated directory, invokes `$imagegen`, passes references, and accepts only an actual validated `asset.png` output. It strips the app's API keys/tokens from the child environment, uses the workspace-write sandbox without elevating permissions, enforces timeout/concurrency, and terminates workers on cancellation. Verify one image against your local CLI/account before relying on the workflow.
+
+The installed built-in imagegen tool has no public image-model parameter. `CODEX_IMAGE_VARIANT` therefore accepts only `auto`; `flare`/`sunburst` fail explicitly. `CODEX_IMAGE_AGENT_MODEL` selects the language model running the task, not the image model. Exact image-model selection is available in the separately billed API provider with `OPENAI_IMAGE_MODEL=gpt-image-2.5-flare` or `gpt-image-2.5-sunburst`; the API default is now Flare, replacing retired `gpt-image-1`. See [Codex image generation](https://learn.chatgpt.com/docs/image-generation) and [API image tools](https://developers.openai.com/api/docs/guides/tools-image-generation).
+
+`CODEX_IMAGE_FALLBACK=none` stops on failure. Only an explicit `seedream` value uses Ark credits; `chatgpt_manual` switches to human handoff. Assets and usage record the provider that actually produced the image. Set `CODEX_IMAGE_ENABLED=true` to enable the picker option without making it the default.
+
+For human handoff, set `IMAGE_PROVIDER=chatgpt_manual` (or enable the picker with `MANUAL_IMAGE_ENABLED=true`). When the agent requests an image, a card appears with a ZIP containing `prompt.txt`, references, manifest and instructions. Generate the image in ChatGPT, download the full original and upload PNG/JPEG/WebP (max 20 MB) to that card. The original tool call resumes and the agent reviews the uploaded image. Refreshed pages reload the task list. `MANUAL_IMAGE_TIMEOUT_MS` defaults to 86400000 (24 hours; valid range 100–604800000). Cancelling a card stops its original job. Prompt/reference files remain in the project's `handoffs/` directory, outside existing project backup ZIPs.
+
+After a restart, timeout or stopped job, upload the result and click Continue review to import it and start a new visual-review job. The same handoff is not imported twice. If agent credentials fail, the imported asset remains pending for manual review; demo continuations import only. Codex subscription and human outputs count against the image-call budget but add no Platform image API estimate; actual subscription usage/credits follow Codex or ChatGPT.
 
 ### Generate images with Seedream 5.0 Flash
 

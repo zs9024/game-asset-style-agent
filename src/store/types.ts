@@ -40,6 +40,7 @@ export interface Asset {
   notes?: string;
   runId: string;
   provider: string;
+  handoffId?: string;
   createdAt: string;
   /** sprite_sheet only: sliced frame files and GIF preview, relative to project dir */
   frames?: string[];

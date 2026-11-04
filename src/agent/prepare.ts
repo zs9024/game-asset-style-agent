@@ -26,6 +26,12 @@ export async function prepareRun(job: Job, opts: RunOptions, identity: Identity)
   });
   const redrawImages = await Promise.all(redraws.map(async (r) =>
     shrink({ data: await readProjectFile(project.id, r.target.file), mime: r.target.mime }, 768)));
+  const reviewAssets = (opts.reviewAssetIds ?? []).map((id) => {
+    const asset = project.assets.find((a) => a.id === id);
+    if (!asset) throw new Error("待审核素材不存在");
+    return asset;
+  });
+  const reviewImages = await Promise.all(reviewAssets.map(async (a) => shrink({ data: await readProjectFile(project.id, a.file), mime: a.mime }, 768)));
   let history = opts.continueConversation ? await loadConversation(project.id) : null;
   if (history && ((history.agentProvider ?? "claude") !== identity.agentProvider || (history.model && history.model !== identity.model)
     || history.authMode !== identity.authMode || history.accountId !== identity.accountId)) {
@@ -41,6 +47,7 @@ export async function prepareRun(job: Job, opts: RunOptions, identity: Identity)
     { type: "text", text: continuing ? "New request in the same project. The style guide below is current (the user may have edited it since)." : `Style reference images (${refs.length}):` },
     ...(continuing ? [] : refs.flatMap((r, i) => [{ type: "text" as const, text: `Reference ${i + 1}:` }, jpegBlock(r.data)])),
     ...redraws.flatMap((r, i) => [{ type: "text" as const, text: `Asset to redraw (${r.target.id}):` }, jpegBlock(redrawImages[i].data)]),
+    ...reviewAssets.flatMap((a, i) => [{ type: "text" as const, text: `Human-generated asset to REVIEW: asset_id=${a.id}, name=${a.name}. Inspect this image and call review_asset. Do not call generate_image for this review-only request. If rejected, describe changes for the user.` }, jpegBlock(reviewImages[i].data)]),
     { type: "text", text: buildIntro({ project, request: opts.request, assetTypes: opts.assetTypes, redraws }) },
   ] };
   const limits = [job.budget.maxImages !== null ? `图像 ≤ ${job.budget.maxImages} 次` : "", job.budget.maxUsd !== null ? `费用 ≤ $${job.budget.maxUsd}` : ""].filter(Boolean);

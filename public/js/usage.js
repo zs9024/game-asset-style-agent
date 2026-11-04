@@ -37,7 +37,7 @@ export function renderLiveUsage(usage) {
       : `<span title="输入 / 输出 / 缓存写 / 缓存读">Agent ${usage.claude.requests} 次${usage.agent?.authMode === "chatgpt" ? "（ChatGPT 订阅额度）" : ""} · ↑${fmtTokens(t.input_tokens + t.cache_creation_input_tokens + t.cache_read_input_tokens)} ↓${fmtTokens(t.output_tokens)}${t.cache_read_input_tokens ? ` · 缓存命中 ${fmtTokens(t.cache_read_input_tokens)}` : ""}</span>`;
   bar.hidden = false;
   bar.innerHTML = `<span class="usage-label">本次</span>${claude}
-    <span>图像 ${usage.images.calls}${usage.budget?.maxImages ? ` / ${usage.budget.maxImages}` : ""} 次${usage.images.failed ? `（失败 ${usage.images.failed}）` : ""}</span>
+    <span>图像 ${usage.images.calls}${usage.budget?.maxImages ? ` / ${usage.budget.maxImages}` : ""} 次${usage.images.failed ? `（失败 ${usage.images.failed}）` : ""}${usage.images.byProvider.codex_image ? " · Codex 订阅" : ""}${usage.images.byProvider.chatgpt_manual ? " · 人工接力" : ""}</span>
     <span class="usage-cost" title="估算费用${esc(costNote(usage.cost))}">≈ ${fmtCost(usage.cost.total)}${usage.budget?.maxUsd ? ` / $${usage.budget.maxUsd}` : ""}</span>
     <button class="btn link" data-usage-open>项目用量 ›</button>`;
 }
@@ -110,7 +110,7 @@ export async function openUsageDialog(projectId) {
           .join("")}</tbody></table></div>`
           : `<p class="muted">还没有运行记录。</p>`
       }
-      <p class="muted usage-foot">API 费用按模型官方单价估算（DeepSeek 使用峰时价）；ChatGPT 订阅用量不折算成 API 费用。图像单价通过 IMAGE_PRICE_OPENAI / IMAGE_PRICE_GEMINI / IMAGE_PRICE_SEEDREAM 配置（美元/张，人民币单价需换算）。</p>
+      <p class="muted usage-foot">API 费用按模型官方单价估算（DeepSeek 使用峰时价）；ChatGPT 订阅、Codex 内置生图和人工接力不折算成 API 费用，仍记录调用次数。图像单价通过 IMAGE_PRICE_OPENAI / IMAGE_PRICE_GEMINI / IMAGE_PRICE_SEEDREAM 配置（美元/张，人民币单价需换算）。</p>
       <div class="usage-storage muted"><span>磁盘占用 <b id="storageBytes">…</b></span>
         <button class="btn link" data-cleanup title="删除不属于任何素材或参考图的文件">清理无主文件</button></div>`;
     loadStorage(projectId);
