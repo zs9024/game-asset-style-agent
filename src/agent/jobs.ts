@@ -6,6 +6,7 @@ import { runDemo } from "./demo.js";
 import { type Job, type RunOptions, emit, jobs, reportUsage, requestLabel } from "./events.js";
 import { runAgent } from "./loop.js";
 import { runManual } from "./manual.js";
+import { msg } from "../i18n.js";
 import { runHandoffResume } from "./handoffResume.js";
 
 /** How long a finished job's event log stays available for reconnecting clients. */
@@ -26,6 +27,9 @@ export function startJob(opts: RunOptions): Job {
     budget: resolveBudget(opts.budget),
   };
   job.usage.budget = job.budget;
+  if (!opts.manual && !opts.actionSet && !opts.redraws?.length && (opts.request.trim() || opts.assetTypes.length)) {
+    job.usage.rerun = { request: opts.request, assetTypes: [...opts.assetTypes] };
+  }
   jobs.set(job.id, job);
   // Record the run immediately so a crash before the first image call still leaves a trace.
   reportUsage(job);
@@ -37,7 +41,7 @@ export function startJob(opts: RunOptions): Job {
     })
     .catch((err: unknown) => {
       job.usage.status = job.abort.signal.aborted ? "stopped" : "error";
-      if (job.abort.signal.aborted) emit(job, { type: "status", text: "已停止" });
+      if (job.abort.signal.aborted) emit(job, { type: "status", text: msg("run.stopped") });
       else emit(job, { type: "error", message: err instanceof Error ? err.message : String(err) });
     })
     .finally(() => {

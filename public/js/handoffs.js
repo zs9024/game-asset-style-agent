@@ -1,7 +1,8 @@
 import { $, api, esc, toast } from "./lib.js";
+import { has, t } from "./i18n.js";
 import { state } from "./state.js";
 
-const STATUS = { waiting: "等待人工生图", submitted: "图片已收到", cancelled: "已取消，可上传后接续", expired: "已超时，可上传后接续", imported: "已入库" };
+const statusLabel = (status) => (has(`handoff.status.${status}`) ? t(`handoff.status.${status}`) : esc(status));
 
 /** Human work can outlive the SSE connection or original job. Re-fetch durable task state. */
 export function bindHandoffs(onResume) {
@@ -24,17 +25,17 @@ export function bindHandoffs(onResume) {
       signature = nextSignature;
       const visible = tasks.filter((task) => task.status !== "imported");
       panel.hidden = !visible.length;
-      panel.innerHTML = `<h3>ChatGPT 人工接力</h3><p class="muted">下载提示词和参考图，在 ChatGPT 生图后上传原图。原任务会继续审核；运行中断时可点「继续审核」。</p>${visible.map((task) => {
+      panel.innerHTML = `<h3>${t("handoff.heading")}</h3><p class="muted">${t("handoff.intro")}</p>${visible.map((task) => {
         const base = `/api/projects/${projectId}/handoffs/${task.id}`;
         const canUpload = ["waiting", "cancelled", "expired"].includes(task.status);
         return `<article class="handoff-card" data-handoff="${esc(task.id)}">
-          <b>${esc(task.name)}</b> <span class="muted">${STATUS[task.status] ?? esc(task.status)} · ${task.referenceCount} 张参考图${task.status === "waiting" && !task.live ? " · 原运行已中断" : ""}</span>
-          <div class="handoff-actions"><a class="btn ghost" href="${base}/package.zip" download>下载提示词与参考图 ZIP</a>
-          <button type="button" class="btn link" data-copy-handoff>复制提示词</button>
-          ${canUpload ? '<label class="btn ghost">上传生成结果<input type="file" data-upload-handoff accept="image/png,image/jpeg,image/webp" hidden /></label>' : ""}
-          ${task.status === "submitted" && !task.live ? '<button type="button" class="btn primary" data-resume-handoff>继续审核</button>' : ""}
-          ${task.status === "waiting" ? '<button type="button" class="btn link danger" data-cancel-handoff>取消并停止本次运行</button>' : ""}</div>
-          <details><summary>查看提示词</summary><pre>${esc(task.prompt)}</pre></details></article>`;
+          <b>${esc(task.name)}</b> <span class="muted">${statusLabel(task.status)} · ${t("handoff.refs", { n: task.referenceCount })}${task.status === "waiting" && !task.live ? t("handoff.interrupted") : ""}</span>
+          <div class="handoff-actions"><a class="btn ghost" href="${base}/package.zip" download>${t("handoff.downloadZip")}</a>
+          <button type="button" class="btn link" data-copy-handoff>${t("handoff.copyPrompt")}</button>
+          ${canUpload ? `<label class="btn ghost">${t("handoff.upload")}<input type="file" data-upload-handoff accept="image/png,image/jpeg,image/webp" hidden /></label>` : ""}
+          ${task.status === "submitted" && !task.live ? `<button type="button" class="btn primary" data-resume-handoff>${t("handoff.resume")}</button>` : ""}
+          ${task.status === "waiting" ? `<button type="button" class="btn link danger" data-cancel-handoff>${t("handoff.cancel")}</button>` : ""}</div>
+          <details><summary>${t("handoff.showPrompt")}</summary><pre>${esc(task.prompt)}</pre></details></article>`;
       }).join("")}`;
     } catch (error) { if (state.project?.id === projectId) toast(error.message); }
     finally { loading = false; }
@@ -48,7 +49,7 @@ export function bindHandoffs(onResume) {
     if (!task || !projectId) return;
     try {
       if (event.target.closest("[data-copy-handoff]")) {
-        await navigator.clipboard.writeText(task.prompt); toast("提示词已复制");
+        await navigator.clipboard.writeText(task.prompt); toast(t("handoff.copied"));
       } else if (event.target.closest("[data-cancel-handoff]")) {
         await api(`/api/projects/${projectId}/handoffs/${task.id}/cancel`, { method: "POST", body: {} }); await refresh();
       } else if (event.target.closest("[data-resume-handoff]")) {
@@ -67,12 +68,13 @@ export function bindHandoffs(onResume) {
     const body = new FormData(); body.append("image", input.files[0]); input.disabled = true;
     try {
       const result = await api(`/api/projects/${projectId}/handoffs/${card.dataset.handoff}/result`, { method: "POST", body });
-      toast(result.needsResume ? "图片已收到，点击「继续审核」接续任务" : "图片已收到，Agent 将继续审核");
+      toast(result.needsResume ? t("handoff.receivedResume") : t("handoff.receivedContinue"));
     } catch (error) { input.disabled = false; toast(error.message); }
     finally { fileBusy = false; await refresh(); }
   });
   panel.addEventListener("cancel", () => { fileBusy = false; }, true);
   document.addEventListener("gaa:handoff-change", () => void refresh());
+  document.addEventListener("gaa:lang", () => void refresh());
   document.addEventListener("gaa:project-switch", (event) => { panel.hidden = true; signature = ""; fileBusy = false; projectTarget = event.detail.to; queueMicrotask(() => void refresh()); });
   setInterval(() => { if (!document.hidden && state.project) void refresh(); }, 3000);
 }

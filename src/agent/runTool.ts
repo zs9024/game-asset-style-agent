@@ -1,16 +1,23 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { shrink } from "../image/io.js";
+import { imageSize, shrink } from "../image/io.js";
+import { detectNineSlice, stretchNineSlice } from "../image/nineSlice.js";
+import { dominantColors } from "../image/recolor.js";
+import { isPixelArt } from "../image/sizes.js";
 import { describePalette } from "../image/palette.js";
 import type { Jitter } from "../image/spriteSheet.js";
 import type { SeamReport } from "../image/tiles.js";
-import { alignedVersion, cutoutAsset, jitterOf, paletteSnapVersion, seamlessVersion, seamsOf } from "../ops/assetOps.js";
+import { alignedVersion, cutoutAsset, jitterOf, paletteSnapVersion, outlineVersion, recolorVariant, seamlessVersion, seamsOf, setNineSlice } from "../ops/assetOps.js";
 import type { ImageProvider } from "../providers/types.js";
 import { loadProject, readProjectFile, recordStyleVersion, updateProject } from "../store/index.js";
 import type { Asset, Project } from "../store/types.js";
+import { measureConsistency } from "../ops/consistency.js";
 import { generateAsset } from "./assets.js";
 import { BudgetExceededError } from "./budget.js";
 import { type Job, emit } from "./events.js";
-import { AlignFramesInput, FixSeamsInput, GenerateInput, RemoveBackgroundInput, ReviewInput, SnapPaletteInput, StyleGuideInput } from "./schemas.js";
+import {
+  AlignFramesInput, CheckConsistencyInput, FixSeamsInput, GenerateInput, NineSliceToolInput, OutlineInput, RecolorInput, RemoveBackgroundInput, ReviewInput, SnapPaletteInput, StyleGuideInput,
+} from "./schemas.js";
+import { recordNote } from "../domain/noteLog.js";
 
 type ToolResult = Anthropic.Beta.BetaToolResultBlockParam;
 
@@ -104,6 +111,7 @@ export async function runTool(job: Job, provider: ImageProvider, block: Anthropi
         updated.score = parsed.data.consistency_score;
         updated.notes = parsed.data.notes;
         updated.reviewer = "agent";
+        recordNote(updated, "agent", parsed.data.notes);
       });
       if (!updated) return errResult(block.id, `Unknown asset_id ${parsed.data.asset_id}`);
       emit(job, { type: "asset", asset: updated });
@@ -167,6 +175,92 @@ export async function runTool(job: Job, provider: ImageProvider, block: Anthropi
         `New version asset_id=${r.asset.id} (from ${found.asset.id}). On-palette pixels ${pct(r.before.coverage)} → ${pct(r.after.coverage)}. Check for banding or lost detail, then review the new version.`,
         await readProjectFile(found.project.id, r.asset.file),
         r.asset.mime,
+      );
+    }
+    case "add_outline": {
+      const parsed = OutlineInput.safeParse(block.input);
+      if (!parsed.success) return invalid();
+      const found = await findAssetFor(job, parsed.data.asset_id);
+      if (!found) return errResult(block.id, `Unknown asset_id ${parsed.data.asset_id}`);
+      const width = parsed.data.width ?? 2;
+      const r = await outlineVersion(found.project, found.asset, { width, color: parsed.data.color }, { by: "agent", runId: job.id });
+      if (typeof r === "string") return errResult(block.id, r);
+      emit(job, { type: "asset", asset: r });
+      return withImage(
+        block.id,
+        `New version asset_id=${r.id} (from ${found.asset.id}) with a ${width}px outline. Check it is even and doesn't swallow small details, then review the new version.`,
+        await readProjectFile(found.project.id, r.file),
+        r.mime,
+      );
+    }
+    case "recolor_variant": {
+      const parsed = RecolorInput.safeParse(block.input);
+      if (!parsed.success) return invalid();
+      const found = await findAssetFor(job, parsed.data.asset_id);
+      if (!found) return errResult(block.id, `Unknown asset_id ${parsed.data.asset_id}`);
+      const { swaps, name, threshold } = parsed.data;
+      const r = await recolorVariant(found.project, found.asset, { swaps, name, threshold }, { by: "agent", runId: job.id });
+      if (typeof r === "string") return errResult(block.id, r);
+      emit(job, { type: "asset", asset: r });
+      const main = (await dominantColors(await readProjectFile(found.project.id, found.asset.file))).map((c) => `${c.hex} ${Math.round(c.share * 100)}%`).join(", ");
+      return withImage(
+        block.id,
+        `New variant asset_id=${r.id} "${r.name}" (of ${found.asset.id}). The original's main colours: ${main}. If some shades of a colour didn't change, retry with a higher threshold or add that shade as another swap. Review the variant.`,
+        await readProjectFile(found.project.id, r.file),
+        r.mime,
+      );
+    }
+    case "check_consistency": {
+      const parsed = CheckConsistencyInput.safeParse(block.input ?? {});
+      if (!parsed.success) return invalid();
+      const project = await loadProject(job.projectId);
+      const report = await measureConsistency(project, { tag: parsed.data.tag });
+      if (!report) return errResult(block.id, "There is no style guide palette yet; call save_style_guide first.");
+      const byId = new Map(project.assets.map((a) => [a.id, a]));
+      const pct = (x: number) => `${Math.round(x * 100)}%`;
+      const drifting = report.items.filter((i) => i.reasons.length).slice(0, parsed.data.limit ?? 8);
+      const lines = drifting.map((i) => {
+        const a = byId.get(i.id)!;
+        const mine = a.runId === job.id ? " (made in this run)" : "";
+        return `- ${a.id} "${a.name}" [${a.assetType}]${mine}: drift ${i.drift} — ${i.reasons.join("; ")}`;
+      });
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: [
+          `Measured ${report.items.length} current assets${parsed.data.tag ? ` tagged "${parsed.data.tag}"` : ""}. ${parsed.data.tag ? "Group" : "Project"} median: on-palette ${pct(report.medianCoverage)}, mean ΔE ${Math.round(report.medianDeltaE * 10) / 10}.`,
+          drifting.length ? `Clearly drifting, most first:\n${lines.join("\n")}` : "No asset clearly drifts from the rest of the set.",
+        ].join("\n"),
+      };
+    }
+    case "set_nine_slice": {
+      const parsed = NineSliceToolInput.safeParse(block.input);
+      if (!parsed.success) return invalid();
+      const found = await findAssetFor(job, parsed.data.asset_id);
+      if (!found) return errResult(block.id, `Unknown asset_id ${parsed.data.asset_id}`);
+      if (found.asset.assetType !== "ui") return errResult(block.id, "set_nine_slice only applies to ui assets.");
+      const data = await readProjectFile(found.project.id, found.asset.file);
+      const size = await imageSize(data);
+      const { left, top, right, bottom } = parsed.data;
+      const given = [left, top, right, bottom].filter((v) => v !== undefined).length;
+      if (given && given < 4) return errResult(block.id, "Give all four margins, or none to detect them.");
+      const margins = given ? { left: left!, top: top!, right: right!, bottom: bottom! } : await detectNineSlice(data);
+      if (!margins) {
+        return errResult(
+          block.id,
+          `No stretchable band found automatically (image ${size.width}×${size.height}). If this asset should stretch, look at it and pass the four margins yourself; if its centre isn't flat enough to stretch, regenerate it with a plain centre.`,
+        );
+      }
+      const updated = await setNineSlice(found.project, found.asset, margins);
+      if (typeof updated === "string") return errResult(block.id, `${updated} (image ${size.width}×${size.height}).`);
+      emit(job, { type: "asset", asset: updated });
+      const m = updated.nineSlice!;
+      const preview = await stretchNineSlice(data, m, size.width * 2, Math.round(size.height * 1.5), isPixelArt(found.project.styleGuide));
+      return withImage(
+        block.id,
+        `Saved 9-slice margins on asset_id=${updated.id}${given ? "" : " (detected)"}: left ${m.left}, top ${m.top}, right ${m.right}, bottom ${m.bottom} of ${size.width}×${size.height}. The image below is the asset stretched to 2× width and 1.5× height; if corners or ornaments got distorted, call again with corrected margins.`,
+        preview,
+        "image/png",
       );
     }
     default:

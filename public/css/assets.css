@@ -7,7 +7,13 @@
 .assets { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .assets .empty { grid-column: 1 / -1; color: var(--muted); padding: 30px 0; text-align: center; }
 .card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); cursor: zoom-in; display: flex; flex-direction: column; }
-.card.rejected { opacity: 0.55; }
+/* Rejected: fade the picture, not the text, so name and status stay readable. */
+.card.rejected .checker { opacity: 0.55; }
+.card-menu { position: fixed; z-index: 20; min-width: 160px; margin: 0; padding: 4px; list-style: none; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); font-size: 13px; }
+.card-menu button { display: block; width: 100%; text-align: left; padding: 6px 10px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; cursor: pointer; }
+.card-menu button:hover, .card-menu button:focus-visible { background: var(--bg); outline: none; }
+.card-menu [role="separator"] { height: 1px; margin: 4px 6px; background: var(--line); }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .checker {
   background-color: var(--check-b);
   background-image: linear-gradient(45deg, var(--check-a) 25%, transparent 25%), linear-gradient(-45deg, var(--check-a) 25%, transparent 25%),
@@ -24,7 +30,8 @@
 .card.new { animation: pop 0.4s ease-out; }
 @keyframes pop { from { transform: scale(0.94); opacity: 0; } to { transform: none; opacity: 1; } }
 .btn.small { padding: 3px 10px; font-size: 12px; text-decoration: none; }
-.export { display: flex; gap: 6px; margin-bottom: 10px; }
+.export { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.export .btn { white-space: nowrap; }
 .badge { font-size: 11px; font-weight: 600; }
 .badge.approved { color: var(--ok); }
 .badge.rejected { color: var(--bad); }
@@ -42,7 +49,7 @@
 .card.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 .card.selected .tick { background: var(--accent); border-color: var(--accent); }
 .card.selected .tick::after { content: "✓"; color: #fff; font-size: 12px; font-weight: 700; display: grid; place-items: center; height: 100%; line-height: 1; }
-.assets.selecting .card.rejected { opacity: 0.8; }
+.assets.selecting .card.rejected .checker { opacity: 0.8; }
 .asset-search { display: flex; gap: 6px; margin-bottom: 10px; position: relative; flex-wrap: wrap; }
 .asset-search input { flex: 1 1 160px; min-width: 0; font: inherit; font-size: 12px; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 .asset-search select { font-size: 12px; padding: 4px 6px; }
@@ -56,3 +63,11 @@
 .viewer-tags { align-items: center; gap: 6px; }
 .viewer-tags .tag { font-size: 12px; padding: 1px 8px; }
 .viewer-tags .btn.link { font-size: 12px; }
+.card .checker { position: relative; }
+.marks { position: absolute; right: 6px; bottom: 6px; display: flex; gap: 4px; pointer-events: none; }
+.mark { font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 999px; color: #fff; background: rgba(0, 0, 0, 0.6); }
+.mark.old { background: rgba(70, 70, 70, 0.85); }
+.color-filter { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); flex-shrink: 0; white-space: nowrap; }
+.color-filter label { display: flex; gap: 4px; align-items: center; }
+.color-filter input[type="color"] { width: 28px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; }
+.assets .more { grid-column: 1 / -1; justify-self: center; }

@@ -1,45 +1,64 @@
 import { Router } from "express";
-import {
-  alignedVersion, cutoutAsset, jitterOf, paletteSnapVersion, parseAlignMode, seamlessVersion, seamsOf, sliceAssetFrames,
-} from "../ops/assetOps.js";
+import multer from "multer";
+import { isAssetType, isOpaqueType } from "../domain/assetTypes.js";
+import { toPng } from "../image/io.js";
+import { isOpaque } from "../image/background.js";
+import { cutoutAsset, setNineSlice, sliceAssetFrames } from "../ops/assetOps.js";
 import { analyzePalette } from "../image/palette.js";
-import { isPixelArt, parseSize, resizeAsset } from "../image/sizes.js";
-import { tilePreview } from "../image/tiles.js";
-import { moveToTrash, readProjectFile, removeAssetFiles, restoreFromTrash, takeForPurge, updateProject } from "../store/index.js";
+import { loadProject, moveToTrash, newId, readProjectFile, removeAssetFiles, restoreFromTrash, takeForPurge, updateProject, writeProjectFile } from "../store/index.js";
 import type { Asset } from "../store/types.js";
 import { hasTag, normalizeTags } from "../domain/tags.js";
-import { attachment, findAsset, pid } from "./util.js";
+import { replaceableVersions } from "../domain/versions.js";
+import { findAsset, pid } from "./util.js";
+import { msg } from "../i18n.js";
+import { recordNote } from "../domain/noteLog.js";
 
+// Asset library routes: review and edits, batch actions, trash, import, version cleanup.
 export const assetsRouter = Router();
 
 const STATUSES = ["approved", "rejected", "pending_review"];
 
 const REVIEW_ACTIONS = { approve: "approved", reject: "rejected", pending: "pending_review" } as const;
-const BATCH_ACTIONS = ["approve", "reject", "pending", "delete", "restore", "purge", "tag", "untag"] as const;
+const BATCH_ACTIONS = ["approve", "reject", "pending", "delete", "restore", "purge", "tag", "untag", "rename"] as const;
 type BatchAction = (typeof BATCH_ACTIONS)[number];
 
 /**
  * Apply one action to many assets: approve / reject / pending (review), delete (to the trash),
  * restore (from the trash), purge (permanently, from the library or the trash),
- * tag / untag (add or remove `tags`).
+ * tag / untag (add or remove `tags`), rename (`prefix` + number from `start`, in the given order).
  */
 assetsRouter.post("/api/projects/:id/assets/batch", async (req, res) => {
   const action = req.body?.action as BatchAction;
   const ids: unknown = req.body?.ids;
-  if (!BATCH_ACTIONS.includes(action)) return void res.status(400).json({ error: "无效的批量操作" });
+  if (!BATCH_ACTIONS.includes(action)) return void res.status(400).json({ error: msg("err.badBatch") });
   if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || !ids.every((x) => typeof x === "string")) {
-    return void res.status(400).json({ error: "请提供要操作的素材 id 列表" });
+    return void res.status(400).json({ error: msg("err.needIds") });
   }
   const wanted = new Set(ids as string[]);
   const tags = normalizeTags(req.body?.tags);
-  if ((action === "tag" || action === "untag") && !tags.length) return void res.status(400).json({ error: "请提供标签" });
+  if ((action === "tag" || action === "untag") && !tags.length) return void res.status(400).json({ error: msg("err.needTags") });
+  const prefix = typeof req.body?.prefix === "string" ? req.body.prefix.trim().slice(0, 60) : "";
+  if (action === "rename" && !prefix) return void res.status(400).json({ error: msg("err.needPrefix") });
+  const start = req.body?.start === undefined ? 1 : Number(req.body.start);
+  if (action === "rename" && !(Number.isInteger(start) && start >= 0 && start <= 9999)) return void res.status(400).json({ error: msg("err.start") });
   let affected = 0;
   let purged: string[] = [];
   const project = await updateProject(pid(req), (p) => {
     if (action === "delete") affected = moveToTrash(p, wanted);
     else if (action === "restore") affected = restoreFromTrash(p, wanted);
     else if (action === "purge") affected = (purged = takeForPurge(p, wanted)).length;
-    else if (action === "tag" || action === "untag") {
+    else if (action === "rename") {
+      // Numbered in the order the ids were given (the library's order), zero-padded to the widest number.
+      const order = (ids as string[]).filter((id, i, all) => all.indexOf(id) === i);
+      const width = Math.max(2, String(start + order.length - 1).length);
+      let n = start;
+      for (const id of order) {
+        const a = p.assets.find((x) => x.id === id);
+        if (!a) continue;
+        a.name = `${prefix}${String(n++).padStart(width, "0")}`;
+        affected++;
+      }
+    } else if (action === "tag" || action === "untag") {
       for (const a of p.assets) {
         if (!wanted.has(a.id)) continue;
         const next =
@@ -61,6 +80,38 @@ assetsRouter.post("/api/projects/:id/assets/batch", async (req, res) => {
   res.json({ affected, project });
 });
 
+/**
+ * Undo a batch edit: put back each asset's review state, tags and name as they were before it
+ * ({ items: [{ id, status, reviewer?, tags?, name }] }). Assets that are gone since are skipped.
+ */
+assetsRouter.post("/api/projects/:id/assets/revert", async (req, res) => {
+  const items: unknown = req.body?.items;
+  if (!Array.isArray(items) || !items.length || items.length > 1000) return void res.status(400).json({ error: msg("err.needIds") });
+  const valid = items.every(
+    (i) =>
+      i && typeof i.id === "string" && STATUSES.includes(i.status) && typeof i.name === "string" && i.name.trim() &&
+      (i.reviewer === undefined || i.reviewer === "user" || i.reviewer === "agent") && (i.tags === undefined || Array.isArray(i.tags)),
+  );
+  if (!valid) return void res.status(400).json({ error: msg("err.badRevert") });
+  const byId = new Map((items as { id: string; status: Asset["status"]; reviewer?: Asset["reviewer"]; tags?: unknown; name: string }[]).map((i) => [i.id, i]));
+  let affected = 0;
+  const project = await updateProject(pid(req), (p) => {
+    for (const a of p.assets) {
+      const before = byId.get(a.id);
+      if (!before) continue;
+      a.status = before.status;
+      if (before.reviewer) a.reviewer = before.reviewer;
+      else delete a.reviewer;
+      const tags = normalizeTags(before.tags ?? []);
+      if (tags.length) a.tags = tags;
+      else delete a.tags;
+      a.name = before.name.trim().slice(0, 80);
+      affected++;
+    }
+  });
+  res.json({ affected, project });
+});
+
 /** Empty the trash: permanently delete everything in it. */
 assetsRouter.post("/api/projects/:id/trash/empty", async (req, res) => {
   let purged: string[] = [];
@@ -69,14 +120,106 @@ assetsRouter.post("/api/projects/:id/trash/empty", async (req, res) => {
   res.json({ affected: purged.length, project });
 });
 
-/** Manual review and edits: any of status, notes, name. */
+const importUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024, files: 20 },
+  fileFilter: (_req, file, cb) => cb(null, /^image\/(png|jpeg|webp|gif)$/.test(file.mimetype)),
+});
+
+/** Multipart file names arrive as latin1; re-read them as UTF-8 (Chinese names stay readable). */
+const fileName = (raw: string) => {
+  const utf8 = Buffer.from(raw, "latin1").toString("utf8");
+  const name = (utf8.includes("\uFFFD") ? raw : utf8).replace(/\.[a-z0-9]+$/i, "").trim();
+  return name.slice(0, 80) || msg("import.defaultName");
+};
+
+/**
+ * Import the user's own images as assets (multipart "images", up to 20; fields: assetType, frames for sprite sheets,
+ * cutout=1 to remove flat backgrounds from images that have no transparency).
+ * They count as approved by the user, so every post-process and export applies to them.
+ */
+assetsRouter.post("/api/projects/:id/assets/import", importUpload.array("images", 20), async (req, res) => {
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  const assetType = String(req.body?.assetType ?? "");
+  if (!isAssetType(assetType)) return void res.status(400).json({ error: msg("err.needType") });
+  if (!files.length) return void res.status(400).json({ error: msg("err.noImages") });
+  const frames = req.body?.frames ? Number(req.body.frames) : undefined;
+  if (frames !== undefined && !(Number.isInteger(frames) && frames >= 1 && frames <= 32)) return void res.status(400).json({ error: msg("err.frames") });
+  const project = await loadProject(pid(req));
+  const hexes = project.styleGuide?.palette.map((p) => p.hex) ?? [];
+  const created: Asset[] = [];
+  for (const f of files) {
+    const id = newId("ast");
+    const file = `assets/${id}.png`;
+    const png = await toPng(f.buffer);
+    await writeProjectFile(project.id, file, png);
+    const asset: Asset = {
+      id,
+      name: fileName(f.originalname),
+      assetType,
+      prompt: "",
+      file,
+      mime: "image/png",
+      status: "approved",
+      reviewer: "user",
+      notes: msg("note.imported"),
+      runId: "import",
+      provider: "import",
+      createdAt: new Date().toISOString(),
+    };
+    if (assetType === "sprite_sheet") Object.assign(asset, await sliceAssetFrames(project.id, asset, png, frames));
+    if (hexes.length) {
+      const r = await analyzePalette(png, hexes);
+      asset.palette = { coverage: r.coverage, meanDeltaE: r.meanDeltaE, offPalette: r.offPalette };
+    }
+    created.push(asset);
+  }
+  let p = await updateProject(project.id, (p) => void p.assets.push(...created));
+  // Optional: cut flat backgrounds out right away (the untouched upload stays restorable as originalFile).
+  if (req.body?.cutout === "1" && !isOpaqueType(assetType)) {
+    let cut = 0;
+    for (const a of created) {
+      if (!(await isOpaque(await readProjectFile(p.id, a.file)))) continue;
+      await cutoutAsset(p, a, {});
+      cut++;
+    }
+    if (cut) p = await loadProject(p.id);
+  }
+  res.json({ imported: created.map((a) => a.id), project: p });
+});
+
+/**
+ * Move old versions that have an approved newer version to the trash (restorable). ?dryRun=1 only
+ * reports which ones; returns { ids, affected, project? }.
+ */
+assetsRouter.post("/api/projects/:id/cleanup-versions", async (req, res) => {
+  if (req.query.dryRun) {
+    const ids = replaceableVersions((await loadProject(pid(req))).assets);
+    return void res.json({ ids, affected: 0 });
+  }
+  let ids: string[] = [];
+  let affected = 0;
+  const project = await updateProject(pid(req), (p) => {
+    ids = replaceableVersions(p.assets);
+    affected = moveToTrash(p, new Set(ids));
+  });
+  res.json({ ids, affected, project });
+});
+
+/** Manual review and edits: any of status, notes, name, tags, nineSlice (ui only; null clears). */
 assetsRouter.patch("/api/projects/:id/assets/:assetId", async (req, res) => {
-  const { status, notes, name, tags } = req.body ?? {};
-  if (status !== undefined && !STATUSES.includes(status)) return void res.status(400).json({ error: "无效的状态" });
-  if (name !== undefined && (typeof name !== "string" || !name.trim())) return void res.status(400).json({ error: "名称不能为空" });
-  if (tags !== undefined && !Array.isArray(tags)) return void res.status(400).json({ error: "tags 需为字符串数组" });
-  if (status === undefined && name === undefined && tags === undefined && typeof notes !== "string") {
-    return void res.status(400).json({ error: "没有要修改的内容" });
+  const { status, notes, name, tags, nineSlice } = req.body ?? {};
+  if (status !== undefined && !STATUSES.includes(status)) return void res.status(400).json({ error: msg("err.badStatus") });
+  if (name !== undefined && (typeof name !== "string" || !name.trim())) return void res.status(400).json({ error: msg("err.emptyName") });
+  if (tags !== undefined && !Array.isArray(tags)) return void res.status(400).json({ error: msg("err.tagsArray") });
+  if (status === undefined && name === undefined && tags === undefined && nineSlice === undefined && typeof notes !== "string") {
+    return void res.status(400).json({ error: msg("err.nothingToChange") });
+  }
+  if (nineSlice !== undefined) {
+    const found = await findAsset(req, res);
+    if (!found) return;
+    const r = await setNineSlice(found.project, found.asset, nineSlice);
+    if (typeof r === "string") return void res.status(400).json({ error: r });
   }
   let asset: Asset | undefined;
   await updateProject(pid(req), (p) => {
@@ -89,6 +232,7 @@ assetsRouter.patch("/api/projects/:id/assets/:assetId", async (req, res) => {
     if (typeof notes === "string") {
       asset.notes = notes.slice(0, 2000);
       asset.reviewer = "user";
+      recordNote(asset, "user", asset.notes);
     }
     if (typeof name === "string") asset.name = name.trim().slice(0, 80);
     if (tags !== undefined) {
@@ -97,7 +241,7 @@ assetsRouter.patch("/api/projects/:id/assets/:assetId", async (req, res) => {
       else delete asset.tags;
     }
   });
-  if (!asset) return void res.status(404).json({ error: "素材不存在" });
+  if (!asset) return void res.status(404).json({ error: msg("err.noAsset") });
   res.json(asset);
 });
 
@@ -111,101 +255,4 @@ assetsRouter.delete("/api/projects/:id/assets/:assetId", async (req, res) => {
   });
   if (purged.length) await removeAssetFiles(project.id, purged);
   res.json(project);
-});
-
-/** Re-slice a sprite sheet with a given frame count / fps. */
-assetsRouter.post("/api/projects/:id/assets/:assetId/slice", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  const { project, asset } = found;
-  const frames = req.body?.frames ? Number(req.body.frames) : undefined;
-  const fps = req.body?.fps ? Number(req.body.fps) : 8;
-  if (frames !== undefined && !(frames >= 1 && frames <= 32)) return void res.status(400).json({ error: "帧数需在 1-32 之间" });
-  const sliced = await sliceAssetFrames(project.id, asset, await readProjectFile(project.id, asset.file), frames, fps);
-  const p = await updateProject(project.id, (p) => {
-    const a = p.assets.find((x) => x.id === asset.id);
-    if (a) Object.assign(a, sliced);
-  });
-  res.json(p.assets.find((a) => a.id === asset.id));
-});
-
-/** Cut out (or restore) the background; the untouched model output is kept as originalFile. */
-assetsRouter.post("/api/projects/:id/assets/:assetId/cutout", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  res.json(await cutoutAsset(found.project, found.asset, { tolerance: req.body?.tolerance, restore: !!req.body?.restore }));
-});
-
-assetsRouter.get("/api/projects/:id/assets/:assetId/seams", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  res.json(await seamsOf(found.project, found.asset));
-});
-
-assetsRouter.get("/api/projects/:id/assets/:assetId/tiled.png", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  const n = Number(req.query.n ?? 3);
-  if (!Number.isInteger(n) || n < 2 || n > 6) return void res.status(400).json({ error: "平铺数需为 2-6 的整数" });
-  res.setHeader("Content-Type", "image/png");
-  res.send(await tilePreview(await readProjectFile(found.project.id, found.asset.file), n));
-});
-
-assetsRouter.get("/api/projects/:id/assets/:assetId/sized.png", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  const { project, asset } = found;
-  const size = parseSize(String(req.query.size ?? ""));
-  if (!size) return void res.status(400).json({ error: "尺寸格式应为 32 或 1280x720（8–4096）" });
-  const pixel = req.query.kernel ? req.query.kernel === "nearest" : isPixelArt(project.styleGuide);
-  const png = await resizeAsset(await readProjectFile(project.id, asset.file), {
-    ...size, assetType: asset.assetType, pixel, frames: asset.frames?.length,
-  });
-  res.setHeader("Content-Type", "image/png");
-  if (req.query.download) res.setHeader("Content-Disposition", attachment("asset.png", `${asset.name}@${req.query.size}.png`));
-  res.send(png);
-});
-
-/** Fresh palette check against the current style guide (it may have been edited since generation). */
-assetsRouter.get("/api/projects/:id/assets/:assetId/palette", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  const palette = found.project.styleGuide?.palette.map((p) => p.hex) ?? [];
-  if (!palette.length) return void res.status(400).json({ error: "项目还没有风格指南色板" });
-  const threshold = Math.max(2, Math.min(60, Number(req.query.threshold ?? 20)));
-  res.json(await analyzePalette(await readProjectFile(found.project.id, found.asset.file), palette, { threshold }));
-});
-
-/** Make a tile seamless. The result is a new version (pending review) linked to the original. */
-assetsRouter.post("/api/projects/:id/assets/:assetId/make-seamless", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  const overlap = Number(req.body?.overlap ?? 0.15);
-  if (!(overlap >= 0.04 && overlap <= 0.4)) return void res.status(400).json({ error: "融合比例需在 0.04-0.4 之间" });
-  res.json((await seamlessVersion(found.project, found.asset, overlap, { by: "user" })).asset);
-});
-
-/** How much the content wanders between frames (px). */
-assetsRouter.get("/api/projects/:id/assets/:assetId/jitter", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  if (found.asset.assetType !== "sprite_sheet") return void res.status(400).json({ error: "只有精灵表可以检测帧抖动" });
-  res.json(await jitterOf(found.project, found.asset, parseAlignMode(req.query.mode)));
-});
-
-/** Align frames on a shared anchor; the result is a new version linked to the original. */
-assetsRouter.post("/api/projects/:id/assets/:assetId/align-frames", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  if (found.asset.assetType !== "sprite_sheet") return void res.status(400).json({ error: "只有精灵表可以对齐帧" });
-  res.json(await alignedVersion(found.project, found.asset, parseAlignMode(req.body?.mode), { by: "user" }));
-});
-
-/** Snap colours to the style palette; the result is a new version. Body: { dither: "none" | "ordered" }. */
-assetsRouter.post("/api/projects/:id/assets/:assetId/snap-palette", async (req, res) => {
-  const found = await findAsset(req, res);
-  if (!found) return;
-  if (!found.project.styleGuide?.palette.length) return void res.status(400).json({ error: "项目还没有风格指南色板" });
-  const dither = req.body?.dither === "ordered" ? "ordered" : "none";
-  res.json(await paletteSnapVersion(found.project, found.asset, dither, { by: "user" }));
 });

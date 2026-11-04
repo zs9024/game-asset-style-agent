@@ -1,10 +1,11 @@
 import path from "node:path";
+import { msg } from "./i18n.js";
 
 /** Settings read from the environment. Read lazily so tests can set env vars before use. */
 export const config = {
   get agentProvider(): "claude" | "deepseek" | "gpt" {
     const provider = process.env.AGENT_PROVIDER?.trim() || "claude";
-    if (provider !== "claude" && provider !== "deepseek" && provider !== "gpt") throw new Error("AGENT_PROVIDER 必须为 claude、deepseek 或 gpt");
+    if (provider !== "claude" && provider !== "deepseek" && provider !== "gpt") throw new Error(msg("err.agentProvider"));
     return provider;
   },
   get model() {
@@ -15,12 +16,12 @@ export const config = {
   get effort() {
     if (this.agentProvider === "gpt") {
       const effort = process.env.GPT_EFFORT?.trim() || "medium";
-      if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new Error("GPT_EFFORT 必须为 low、medium、high、xhigh 或 max");
+      if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new Error(msg("err.gptEffort"));
       return effort as "low" | "medium" | "high" | "xhigh" | "max";
     }
     if (this.agentProvider === "deepseek") {
       const effort = process.env.DEEPSEEK_EFFORT?.trim() || "high";
-      if (effort !== "low" && effort !== "high" && effort !== "max") throw new Error("DEEPSEEK_EFFORT 必须为 low、high 或 max");
+      if (effort !== "low" && effort !== "high" && effort !== "max") throw new Error(msg("err.deepseekEffort"));
       return effort;
     }
     return (process.env.CLAUDE_EFFORT ?? "medium") as "low" | "medium" | "high" | "xhigh" | "max";
@@ -30,7 +31,7 @@ export const config = {
   },
   get gptAuthMode(): "api_key" | "chatgpt" {
     const mode = process.env.GPT_AUTH_MODE?.trim() || "api_key";
-    if (mode !== "api_key" && mode !== "chatgpt") throw new Error("GPT_AUTH_MODE 必须为 api_key 或 chatgpt");
+    if (mode !== "api_key" && mode !== "chatgpt") throw new Error(msg("err.gptAuthMode"));
     return mode;
   },
   /** Past this size a project starts a fresh conversation so requests stay well under the API's size limit. */

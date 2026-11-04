@@ -19,128 +19,157 @@
       <span class="logo">◆</span>
       <div>
         <h1>Game Asset Agent</h1>
-        <p>上传风格参考图 → AI 美术总监提炼风格 → 批量生成风格一致的游戏素材</p>
+        <p data-i18n="app.tagline">上传风格参考图 → AI 美术总监提炼风格 → 批量生成风格一致的游戏素材</p>
       </div>
     </div>
     <div class="project-bar">
-      <select id="projectSelect" aria-label="选择项目"></select>
-      <button id="usageBtn" class="btn ghost" title="Agent tokens 与图像调用统计">用量</button>
-      <button id="newProject" class="btn ghost">新建项目</button>
-      <a id="backupProject" class="btn ghost" href="#" download title="导出整个项目（参考图、风格指南、素材、对话、用量）">备份</a>
-      <label class="btn ghost" title="从备份 zip 恢复为一个新项目">导入<input type="file" id="importProject" accept=".zip,application/zip" hidden /></label>
-      <button id="deleteProject" class="btn ghost danger" title="删除当前项目">删除</button>
-      <button id="logout" class="btn ghost" hidden>退出登录</button>
+      <select id="projectSelect" aria-label="选择项目" data-i18n-aria="project.select"></select>
+      <button id="usageBtn" class="btn ghost" title="项目进度、Claude tokens 与图像调用统计" data-i18n="project.usage" data-i18n-title="project.usageTitle">用量</button>
+      <button id="newProject" class="btn ghost" data-i18n="project.new">新建项目</button>
+      <a id="styleSheetLink" class="btn ghost" href="#" target="_blank" rel="noopener" title="单页 HTML：色板、画风规则、参考图与素材样例，可发给外包或打印" data-i18n="project.styleSheet" data-i18n-title="project.styleSheetTitle">风格说明书</a>
+      <a id="backupProject" class="btn ghost" href="#" download title="导出整个项目（参考图、风格指南、素材、对话、用量）" data-i18n="project.backup" data-i18n-title="project.backupTitle">备份</a>
+      <label class="btn ghost" title="从备份 zip 恢复为一个新项目" data-i18n-title="project.importTitle"><span data-i18n="project.import">导入</span><input type="file" id="importProject" accept=".zip,application/zip" hidden /></label>
+      <button id="deleteProject" class="btn ghost danger" title="删除当前项目" data-i18n="project.delete" data-i18n-title="project.deleteTitle">删除</button>
+      <button id="logout" class="btn ghost" hidden data-i18n="project.logout">退出登录</button>
+      <button id="langToggle" class="btn ghost" type="button" title="Switch the interface to English" data-i18n="lang.switch" data-i18n-title="lang.switchTitle">English</button>
     </div>
   </header>
 
   <main class="layout">
     <section class="panel" id="stylePanel">
-      <h2>① 风格参考</h2>
+      <h2 data-i18n="style.heading">① 风格参考</h2>
       <label class="dropzone" id="dropzone">
         <input type="file" id="refInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
-        <span>拖入或点击上传参考图（最多 8 张）</span>
-        <small>截图、原画、已有素材都可以，越能代表目标风格越好</small>
+        <span data-i18n="style.drop">拖入或点击上传参考图（最多 8 张）</span>
+        <small data-i18n="style.dropHint">截图、原画、已有素材都可以，越能代表目标风格越好</small>
       </label>
       <div class="refs" id="refs"></div>
 
       <div class="style-head">
-        <h2>风格指南</h2>
+        <h2 data-i18n="style.guide">风格指南</h2>
         <span class="style-actions">
           <button id="editStyle" class="btn link">编辑</button>
-          <button id="resetStyle" class="btn link" hidden>重新提炼</button>
-          <button id="styleHistory" class="btn link" title="查看与恢复以前的风格指南">历史</button>
+          <button id="resetStyle" class="btn link" hidden data-i18n="style.reset">重新提炼</button>
+          <button id="styleHistory" class="btn link" title="查看与恢复以前的风格指南" data-i18n="style.history" data-i18n-title="style.historyTitle">历史</button>
         </span>
       </div>
       <div id="styleGuide" class="style-guide empty">还没有风格指南，第一次运行时 Agent 会根据参考图自动生成。</div>
+      <details class="conventions" id="conventionsBox">
+        <summary><b data-i18n="style.conventions">项目约定</b> <span class="muted" id="conventionsState"></span></summary>
+        <label for="conventions" class="muted" data-i18n="style.conventionsHint">团队自己的美术规范，每次运行都会发给 Claude，也会写进风格说明书。</label>
+        <textarea id="conventions" rows="4" maxlength="2000" data-i18n-placeholder="style.conventionsPlaceholder" placeholder="例如：图标统一 2px 深色描边；角色正面 3/4 视角；不要文字和边框；UI 面板中心保持平整，方便九宫格拉伸。"></textarea>
+        <button class="btn ghost small" id="saveConventions" type="button" data-i18n="style.saveConventions">保存约定</button>
+      </details>
     </section>
 
     <section class="panel" id="runPanel">
-      <h2>② 描述需求</h2>
+      <h2 data-i18n="run.heading">② 描述需求</h2>
       <div id="agentConnection" class="muted" hidden></div>
       <div class="chips" id="typeChips"></div>
-      <textarea id="request" rows="4" placeholder="例如：为一个蘑菇森林关卡做 6 个道具图标（回血蘑菇、毒蘑菇、木剑、铁盾、金币、钥匙），再做主角小狐狸的立绘和 4 帧走路动画。"></textarea>
+      <textarea id="request" rows="4" data-i18n-placeholder="run.placeholder" placeholder="例如：为一个蘑菇森林关卡做 6 个道具图标（回血蘑菇、毒蘑菇、木剑、铁盾、金币、钥匙），再做主角小狐狸的立绘和 4 帧走路动画。"></textarea>
       <div class="run-row">
-        <label class="provider">图像模型
+        <label class="provider"><span data-i18n="run.provider">图像模型</span>
           <select id="providerSelect"></select>
         </label>
-        <label class="toggle" title="Agent 会记得本项目之前的需求与结果，可以说「把刚才的剑改成蓝色」"><input type="checkbox" id="continueConv" checked /> 延续对话</label>
+        <label class="toggle" title="Agent 会记得本项目之前的需求与结果，可以说「把刚才的剑改成蓝色」" data-i18n-title="run.continueTitle"><input type="checkbox" id="continueConv" checked /> <span data-i18n="run.continue">延续对话</span></label>
         <details class="budget" id="budget">
-          <summary title="单次运行的上限，达到后不再生成新图">预算</summary>
+          <summary title="单次运行的上限，达到后不再生成新图" data-i18n="run.budget" data-i18n-title="run.budgetTitle">预算</summary>
           <div class="budget-pop">
-            <label>图像次数上限 <input type="number" id="budgetImages" min="0" step="1" /></label>
-            <label>费用上限（美元） <input type="number" id="budgetUsd" min="0" step="0.1" /></label>
-            <small class="muted">留空用默认值，填 0 表示不限</small>
+            <label><span data-i18n="run.budgetImages">图像次数上限</span> <input type="number" id="budgetImages" min="0" step="1" /></label>
+            <label><span data-i18n="run.budgetUsd">费用上限（美元）</span> <input type="number" id="budgetUsd" min="0" step="0.1" /></label>
+            <small class="muted" data-i18n="run.budgetHint">留空用默认值，填 0 表示不限</small>
           </div>
         </details>
         <button id="runBtn" class="btn primary">开始生成</button>
-        <button id="stopBtn" class="btn ghost" hidden>停止</button>
+        <button id="stopBtn" class="btn ghost" hidden data-i18n="run.stop">停止</button>
       </div>
       <div class="usage-bar" id="usageBar" hidden></div>
       <div class="conv-bar" id="convBar" hidden></div>
-      <section id="handoffPanel" class="handoff-panel" hidden aria-label="ChatGPT 人工接力"></section>
+      <section id="handoffPanel" class="handoff-panel" hidden aria-label="ChatGPT 人工接力" data-i18n-aria="handoff.heading"></section>
       <div class="log-head">
-        <h2>Agent 工作日志</h2>
+        <h2 data-i18n="run.log">Agent 工作日志</h2>
         <span class="log-toggles">
-          <label class="toggle" title="页面不在前台时，运行结束后弹出系统通知"><input type="checkbox" id="notifyToggle" /> 完成时通知</label>
-          <label class="toggle"><input type="checkbox" id="showThinking" checked /> 显示思考</label>
+          <label class="toggle" title="页面不在前台时，运行结束后弹出系统通知" data-i18n-title="run.notifyTitle"><input type="checkbox" id="notifyToggle" /> <span data-i18n="run.notify">完成时通知</span></label>
+          <label class="toggle"><input type="checkbox" id="showThinking" checked /> <span data-i18n="run.thinking">显示思考</span></label>
         </span>
       </div>
-      <div id="log" class="log"><p class="muted">运行后，这里会实时显示 Agent 的分析、计划、生成与审核过程。</p></div>
+      <div id="log" class="log"><p class="muted" data-i18n="run.logEmpty">运行后，这里会实时显示 Agent 的分析、计划、生成与审核过程。</p></div>
     </section>
 
     <section class="panel" id="assetPanel">
       <div class="asset-head">
-        <h2>③ 素材库 <span id="assetCount" class="count"></span></h2>
+        <h2><span data-i18n="lib.heading">③ 素材库</span> <span id="assetCount" class="count"></span></h2>
         <div class="export">
-          <a class="btn ghost small" id="exportApproved" href="#" download>导出已通过 ZIP</a>
-          <a class="btn ghost small" id="exportAll" href="#" download>导出全部</a>
-          <a class="btn ghost small" id="exportSized" href="#" download title="已通过素材 + 各类型常用尺寸">含多尺寸</a>
-          <a class="btn ghost small" id="exportAtlas" href="#" download title="已通过素材打包成图集 PNG + JSON（Phaser / TexturePacker 格式），背景除外">图集</a>
+          <a class="btn ghost small" id="exportApproved" href="#" download data-i18n="lib.exportApproved">导出已通过 ZIP</a>
+          <button class="btn ghost small" id="exportMore" type="button" data-i18n="lib.exportMore">更多导出…</button>
+          <button class="btn ghost small" id="importBtn" type="button" title="上传自己的图片作为素材，可用全部后处理与导出" data-i18n="lib.import" data-i18n-title="lib.importTitle">导入素材…</button>
+          <button class="btn ghost small" id="sceneBtn" type="button" title="把已通过的素材摆到背景上，看整体是否协调" data-i18n="lib.scene" data-i18n-title="lib.sceneTitle">场景拼版</button>
+          <button class="btn ghost small" id="cleanupVersions" type="button" title="把已有通过新版本的旧版本移到回收站（可恢复）" data-i18n="lib.cleanup" data-i18n-title="lib.cleanupTitle">清理旧版本</button>
+          <button class="btn ghost small" id="consistencyBtn" type="button" title="按风格色板测量所有素材，找出最跑偏的" data-i18n="lib.consistency" data-i18n-title="lib.consistencyTitle">一致性总览</button>
+          <button class="btn ghost small" id="dupBtn" type="button" title="找出几乎一样的素材，一键清理重复" data-i18n="lib.duplicates" data-i18n-title="lib.duplicatesTitle">重复素材</button>
         </div>
         <div class="filters" id="filters">
-          <button data-filter="all" class="on">全部</button>
-          <button data-filter="approved">已通过</button>
-          <button data-filter="rejected">已驳回</button>
-          <button data-filter="pending_review">待审核</button>
+          <button data-filter="all" class="on" data-i18n="filter.all">全部</button>
+          <button data-filter="approved" data-i18n="filter.approved">已通过</button>
+          <button data-filter="rejected" data-i18n="filter.rejected">已驳回</button>
+          <button data-filter="pending_review" data-i18n="filter.pending_review">待审核</button>
           <button data-filter="trash" id="trashFilter">回收站</button>
           <button id="selectToggle" class="select-toggle" type="button">选择</button>
         </div>
       </div>
       <div class="asset-search">
-        <input type="search" id="assetSearch" placeholder="搜索名称 / 意见 / prompt" aria-label="搜索素材" />
-        <select id="typeFilter" aria-label="按类型筛选"><option value="">全部类型</option></select>
-        <select id="tagFilter" aria-label="按标签筛选" hidden><option value="">全部标签</option></select>
+        <datalist id="tagSuggest"></datalist>
+        <input type="search" id="assetSearch" list="tagSuggest" autocomplete="off" placeholder="搜索（支持 #标签 type: status: -排除）" aria-label="搜索素材" title="多个词需同时出现；&quot;带空格的短语&quot;；-词 排除；#标签；type:item_icon；status:approved / rejected / pending" data-i18n-placeholder="filter.search" data-i18n-aria="filter.searchLabel" data-i18n-title="filter.searchTitle" />
+        <select id="typeFilter" aria-label="按类型筛选" data-i18n-aria="filter.type"><option value="" data-i18n="filter.anyType">全部类型</option></select>
+        <select id="tagFilter" aria-label="按标签筛选" data-i18n-aria="filter.tag" hidden><option value="" data-i18n="filter.allTags">全部标签</option></select>
+        <span class="color-filter"><label title="按颜色找素材：列出主要使用该颜色的素材" data-i18n-title="filter.byColorTitle"><span data-i18n="filter.byColor">按颜色</span> <input type="color" id="colorFilter" value="#d84848" /></label><button class="btn link" id="colorFilterClear" type="button" hidden data-i18n="filter.clearColor">清除颜色</button></span>
+        <button class="btn link" id="onlyIdsClear" type="button" hidden data-i18n="filter.clearOnly">只看重复中 · 清除</button>
       </div>
       <div class="batch-bar" id="batchBar" hidden>
         <span class="batch-count"></span>
-        <button class="btn link" data-batch="all">全选</button>
-        <button class="btn link" data-batch="none">清空</button>
+        <button class="btn link" data-batch="all" data-i18n="batch.all">全选</button>
+        <button class="btn link" data-batch="none" data-i18n="batch.none">清空</button>
         <span class="batch-actions trash-actions">
-          <button class="btn ghost small" data-batch="restore">↺ 恢复</button>
-          <button class="btn ghost small danger" data-batch="purge">彻底删除</button>
-          <button class="btn ghost small danger" data-batch="empty">清空回收站</button>
+          <button class="btn ghost small" data-batch="restore" data-i18n="batch.restore">↺ 恢复</button>
+          <button class="btn ghost small danger" data-batch="purge" data-i18n="batch.purge">彻底删除</button>
+          <button class="btn ghost small danger" data-batch="empty" data-i18n="batch.empty">清空回收站</button>
         </span>
         <span class="batch-actions library-actions">
-          <button class="btn ghost small" data-batch="approve">✓ 通过</button>
-          <button class="btn ghost small" data-batch="reject">✗ 驳回</button>
-          <button class="btn ghost small" data-batch="redraw" title="把所选素材连同各自的审核意见一次交给 Agent 重画（最多 10 个）">按意见重画</button>
-          <button class="btn ghost small" data-batch="tag" title="给所选素材加标签">+ 标签</button>
-          <button class="btn ghost small" data-batch="untag" title="从所选素材移除标签">− 标签</button>
-          <button class="btn ghost small" data-batch="zip">导出 ZIP</button>
-          <button class="btn ghost small" data-batch="atlas">导出图集</button>
-          <button class="btn ghost small danger" data-batch="delete">删除</button>
+          <button class="btn ghost small" data-batch="approve" data-i18n="batch.approve">✓ 通过</button>
+          <button class="btn ghost small" data-batch="reject" data-i18n="batch.reject">✗ 驳回</button>
+          <button class="btn ghost small" data-batch="redraw" data-i18n="batch.redraw" data-i18n-title="batch.redrawTitle" title="把所选素材连同各自的审核意见一次交给 Agent 重画（最多 10 个）">按意见重画</button>
+          <button class="btn ghost small" data-batch="process:outline" data-i18n="batch.outline" data-i18n-title="batch.outlineTitle" title="给所选素材加 2px 描边（色板最深色），生成新版本">描边</button>
+          <button class="btn ghost small" data-batch="process:cutout" data-i18n="batch.cutout" data-i18n-title="batch.cutoutTitle" title="去除所选素材的背景（原地，可随时恢复原图）">去背景</button>
+          <button class="btn ghost small" data-batch="process:snap" data-i18n="batch.snap" data-i18n-title="batch.snapTitle" title="把所选素材的颜色吸附到风格色板，生成新版本">吸附色板</button>
+          <button class="btn ghost small" data-batch="compare" data-i18n="batch.compare" data-i18n-title="batch.compareTitle" title="把所选的 2-6 个素材并排放大比较">并排比较</button>
+          <button class="btn ghost small" data-batch="tag" data-i18n="batch.tag" data-i18n-title="batch.tagTitle" title="给所选素材加标签">+ 标签</button>
+          <button class="btn ghost small" data-batch="rename" data-i18n="batch.rename" data-i18n-title="batch.renameTitle" title="按素材库顺序把所选素材改名为「前缀 + 序号」">批量改名</button>
+          <button class="btn ghost small" data-batch="untag" data-i18n="batch.untag" data-i18n-title="batch.untagTitle" title="从所选素材移除标签">− 标签</button>
+          <button class="btn ghost small" data-batch="zip" data-i18n="batch.zip">导出 ZIP</button>
+          <button class="btn ghost small" data-batch="atlas" data-i18n="batch.atlas">导出图集</button>
+          <button class="btn ghost small danger" data-batch="delete" data-i18n="batch.delete">删除</button>
         </span>
       </div>
       <div id="assets" class="assets"></div>
     </section>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <ul id="cardMenu" class="card-menu" role="menu" hidden></ul>
   </main>
 
   <dialog id="viewer">
-    <form method="dialog"><button class="close" aria-label="关闭">×</button></form>
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
     <div class="viewer-body">
       <div class="viewer-left">
-        <div class="checker viewer-img" id="viewerImgWrap"><img id="viewerImg" alt="" /></div>
+        <div class="checker viewer-img" id="viewerImgWrap" tabindex="0" role="region" aria-label="图片" data-i18n-aria="zoom.image"><div class="zoom-stage"><img id="viewerImg" alt="" /><div class="pixel-grid" id="pixelGrid" hidden></div></div></div>
+        <div class="zoom-bar" id="zoomBar" role="toolbar" aria-label="缩放" data-i18n-aria="zoom.bar">
+          <button type="button" class="btn link" data-zoom="0" title="适应窗口（0）" data-i18n="zoom.fit" data-i18n-title="zoom.fitTitle">适应</button>
+          <button type="button" class="btn link" data-zoom="1">1×</button>
+          <button type="button" class="btn link" data-zoom="2">2×</button>
+          <button type="button" class="btn link" data-zoom="4">4×</button>
+          <button type="button" class="btn link" data-zoom="8">8×</button>
+          <button type="button" class="btn link" data-zoom="16">16×</button>
+          <button type="button" class="btn link" data-grid title="像素网格（G）" data-i18n="zoom.grid" data-i18n-title="zoom.gridTitle">网格</button>
+        </div>
         <div class="compare" id="viewerCompare" hidden></div>
       </div>
       <div class="viewer-meta" id="viewerMeta"></div>
@@ -148,13 +177,161 @@
   </dialog>
 
   <dialog id="usageDialog" class="usage-dialog">
-    <form method="dialog"><button class="close" aria-label="关闭">×</button></form>
-    <div class="usage-body"><h3>成本与用量</h3><div id="usageBody"></div></div>
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body"><h3 data-i18n="dlg.usage">项目进度与成本</h3><div id="usageBody"></div></div>
   </dialog>
 
   <dialog id="historyDialog" class="usage-dialog">
-    <form method="dialog"><button class="close" aria-label="关闭">×</button></form>
-    <div class="usage-body"><h3>风格指南历史</h3><div id="historyBody"></div></div>
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body"><h3 data-i18n="dlg.styleHistory">风格指南历史</h3><div id="historyBody"></div></div>
+  </dialog>
+
+  <dialog id="consistencyDialog" class="usage-dialog" aria-labelledby="consistencyTitle">
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body"><h3 id="consistencyTitle" data-i18n="dlg.consistency">一致性总览</h3>
+      <label class="consistency-scope" hidden><span data-i18n="dlg.scope">范围</span> <select id="consistencyTag"></select></label>
+      <div id="consistencyBody"></div></div>
+  </dialog>
+
+  <dialog id="dupDialog" class="usage-dialog" aria-labelledby="dupTitle">
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body"><h3 id="dupTitle" data-i18n="dup.title">重复素材</h3><div id="dupBody"></div></div>
+  </dialog>
+
+  <dialog id="importDialog" class="usage-dialog export-dialog" aria-labelledby="importTitle">
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body">
+      <h3 id="importTitle" data-i18n="import.title">导入素材</h3>
+      <form id="importForm" class="export-form">
+        <label><span data-i18n="import.type">素材类型</span> <select name="assetType" required></select></label>
+        <label data-sheet hidden><span data-i18n="import.frames">帧数</span> <input name="frames" type="number" min="1" max="32" placeholder="自动检测" data-i18n-placeholder="import.framesAuto" /> <span class="muted" data-i18n="import.framesHint">精灵表为一行等宽帧</span></label>
+        <label><input type="checkbox" name="cutout" value="1" /> <span data-i18n="import.cutout">导入后自动去背景</span> <span class="muted" data-i18n="import.cutoutHint">白底 / 纯色底的图片抠成透明，原图可恢复</span></label>
+        <label><span data-i18n="import.images">图片</span> <input name="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple required /></label>
+        <p class="muted" data-i18n="import.hint">最多 20 张，名称取自文件名。导入的素材视为已通过，可用后处理、换色、九宫格与全部导出。</p>
+        <div class="export-go"><span class="muted" id="importCount"></span><button class="btn primary" type="submit" data-i18n="import.submit">导入</button></div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="sceneDialog" class="usage-dialog scene-dialog" aria-labelledby="sceneTitle">
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body">
+      <h3 id="sceneTitle" data-i18n="scene.title">场景拼版</h3>
+      <div class="scene-bar">
+        <label><span data-i18n="scene.bg">背景</span> <select id="sceneBg"></select></label>
+        <div id="sceneTools" class="scene-tools" hidden>
+          <button type="button" class="btn ghost small" data-act="smaller" title="缩小（-）" data-i18n="scene.smaller" data-i18n-title="scene.smallerTitle">缩小</button>
+          <button type="button" class="btn ghost small" data-act="bigger" title="放大（+）" data-i18n="scene.bigger" data-i18n-title="scene.biggerTitle">放大</button>
+          <button type="button" class="btn ghost small" data-act="flip" title="水平翻转（F）" data-i18n="scene.flip" data-i18n-title="scene.flipTitle">翻转</button>
+          <button type="button" class="btn ghost small" data-act="copy" data-i18n="scene.copy">复制</button>
+          <button type="button" class="btn ghost small danger" data-act="remove" title="移除（Delete）" data-i18n="scene.remove" data-i18n-title="scene.removeTitle">移除</button>
+        </div>
+      </div>
+      <canvas id="sceneCanvas" width="1280" height="720" tabindex="0" aria-label="场景画布：选中素材后拖动或用方向键摆放，[ ] 切换选中" data-i18n-aria="scene.canvas"></canvas>
+      <p class="muted" data-i18n="scene.hint">点下方素材放入场景；拖动或方向键摆放（Shift 加大步长），[ ] 切换选中，滚轮或 +/- 缩放，F 翻转，Delete 移除。越靠下的素材画在越前面。</p>
+      <div class="scene-palette" id="scenePalette"></div>
+      <div class="export-go"><button type="button" class="btn ghost" id="sceneClear" data-i18n="scene.clear">清空</button><button type="button" class="btn primary" id="sceneDownload" data-i18n="scene.download">下载 PNG</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="newProjectDialog" class="usage-dialog export-dialog" aria-labelledby="newProjectTitle">
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body">
+      <h3 id="newProjectTitle" data-i18n="newProject.title">新建项目</h3>
+      <form id="newProjectForm" class="export-form">
+        <label><span data-i18n="newProject.name">名称</span> <input name="name" maxlength="80" value="新项目" required /></label>
+        <label><span data-i18n="newProject.style">风格</span> <select name="styleFrom"></select></label>
+        <p class="muted" data-i18n="newProject.hint">内置风格直接给出一份风格指南，不上传参考图也能先生成试试，之后可随时编辑或上传参考图重新提炼。复用风格会复制所选项目的风格指南与参考图（含备注）；素材与对话不复制。</p>
+        <div class="export-go"><span></span><button class="btn primary" type="submit" data-i18n="newProject.create">创建</button></div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="compareDialog" class="usage-dialog side-dialog" aria-labelledby="sideTitle">
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body">
+      <h3 id="sideTitle" data-i18n="side.title">并排比较</h3>
+      <div class="side-bar" role="radiogroup" aria-label="背景" data-i18n-aria="side.bg">
+        <label><input type="radio" name="sideBg" value="checker" checked /> <span data-i18n="side.checker">棋盘格</span></label>
+        <label><input type="radio" name="sideBg" value="dark" /> <span data-i18n="side.dark">深色底</span></label>
+        <label><input type="radio" name="sideBg" value="light" /> <span data-i18n="side.light">浅色底</span></label>
+      </div>
+      <div class="side-grid bg-checker" id="sideGrid"></div>
+    </div>
+  </dialog>
+
+  <dialog id="shortcutsDialog" class="usage-dialog export-dialog" aria-labelledby="shortcutsTitle">
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body">
+      <h3 id="shortcutsTitle" data-i18n="keys.title">快捷键</h3>
+      <table class="usage-table shortcut-table">
+        <tbody>
+          <tr><th colspan="2" scope="rowgroup" data-i18n="keys.anywhere">任意位置</th></tr>
+          <tr><td><kbd>?</kbd></td><td data-i18n="keys.help">显示本帮助</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td data-i18n="keys.close">关闭当前对话框</td></tr>
+          <tr><th colspan="2" scope="rowgroup" data-i18n="keys.viewer">素材查看器</th></tr>
+          <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td data-i18n="keys.nextAsset">上一个 / 下一个素材（按素材库当前顺序与筛选）</td></tr>
+          <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td data-i18n="keys.version">同一素材的上一个 / 下一个版本（含换色变体，按时间）</td></tr>
+          <tr><td><kbd>A</kbd></td><td data-i18n="keys.approve">通过</td></tr>
+          <tr><td><kbd>R</kbd></td><td data-i18n="keys.reject">驳回</td></tr>
+          <tr><td><kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd></td><td data-i18n="keys.zoom">放大 / 缩小 / 适应窗口</td></tr>
+          <tr><td><kbd>G</kbd></td><td data-i18n="keys.grid">像素网格</td></tr>
+          <tr><td><kbd>,</kbd> <kbd>.</kbd></td><td data-i18n="keys.frames">精灵表：上一帧 / 下一帧（暂停播放）</td></tr>
+          <tr><td><kbd>Enter</kbd></td><td data-i18n="keys.customSize">在「自定义尺寸」框里下载该尺寸</td></tr>
+          <tr><th colspan="2" scope="rowgroup" data-i18n="keys.scene">场景拼版</th></tr>
+          <tr><td><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></td><td><span data-i18n="keys.moveA">移动选中素材（按住</span> <kbd>Shift</kbd> <span data-i18n="keys.moveB">加大步长）</span></td></tr>
+          <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td data-i18n="keys.switchSel">切换选中素材</td></tr>
+          <tr><td><kbd>+</kbd> <kbd>-</kbd></td><td data-i18n="keys.scale">放大 / 缩小</td></tr>
+          <tr><td><kbd>F</kbd></td><td data-i18n="keys.flip">水平翻转</td></tr>
+          <tr><td><kbd>Delete</kbd></td><td data-i18n="keys.remove">移除</td></tr>
+          <tr><th colspan="2" scope="rowgroup" data-i18n="keys.library">素材库</th></tr>
+          <tr><td><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></td><td data-i18n="keys.libraryMove">在素材之间移动焦点（Home / End 到首尾）</td></tr>
+          <tr><td><kbd>Enter</kbd> <kbd>Space</kbd></td><td data-i18n="keys.libraryOpen">打开查看器；选择模式下勾选</td></tr>
+          <tr><td><kbd>Shift</kbd> + <kbd>F10</kbd></td><td data-i18n="keys.cardMenu">素材菜单（也可右键或长按）</td></tr>
+          <tr><td><kbd>Shift</kbd> + <span data-i18n="keys.click">点击</span></td><td data-i18n="keys.range">多选时连续选择一段</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </dialog>
+
+  <dialog id="exportDialog" class="usage-dialog export-dialog" aria-labelledby="exportTitle">
+    <form method="dialog"><button class="close" aria-label="关闭" data-i18n-aria="dlg.close">×</button></form>
+    <div class="usage-body">
+      <h3 id="exportTitle" data-i18n="export.title">导出</h3>
+      <div class="export-presets">
+        <label><span data-i18n="export.preset.label">预设</span> <select id="exportPreset"></select></label>
+        <button type="button" class="btn link" id="exportPresetSave" data-i18n="export.preset.save">保存为预设…</button>
+        <button type="button" class="btn link danger" id="exportPresetDelete" hidden data-i18n="export.preset.delete">删除此预设</button>
+      </div>
+      <form id="exportForm" class="export-form">
+        <fieldset><legend data-i18n="export.format">格式</legend>
+          <label><input type="radio" name="kind" value="zip" /> <span data-i18n="export.zip">素材包 ZIP</span> <span class="muted" data-i18n="export.zipHint">按类型分目录，含 manifest、Godot .tres、TileSet</span></label>
+          <label><input type="radio" name="kind" value="atlas" /> <span data-i18n="export.atlas">图集</span> <span class="muted" data-i18n="export.atlasHint">PNG + TexturePacker JSON，Phaser / PixiJS 直接加载</span></label>
+        </fieldset>
+        <fieldset><legend data-i18n="export.scope">范围</legend>
+          <label><input type="radio" name="scope" value="approved" /> <span data-i18n="export.approved">只含已通过</span></label>
+          <label><input type="radio" name="scope" value="all" /> <span data-i18n="export.all">全部素材</span></label>
+          <label><span data-i18n="export.tag">标签</span> <select name="tag"></select></label>
+        </fieldset>
+        <fieldset><legend data-i18n="export.names">文件名</legend>
+          <label><input type="radio" name="names" value="original" /> <span data-i18n="export.original">保留素材名</span></label>
+          <label><input type="radio" name="names" value="ascii" /> <span data-i18n="export.ascii">英文安全名</span> <span class="muted" data-i18n="export.asciiHint">含中文或特殊字符的改为「类型_序号」，原名记在 manifest 里</span></label>
+        </fieldset>
+        <fieldset data-kind="zip"><legend data-i18n="export.zipOpts">素材包选项</legend>
+          <label><input type="checkbox" name="sizes" /> <span data-i18n="export.sizes">附各类型常用尺寸</span></label>
+          <label><input type="checkbox" name="unity" /> <span data-i18n="export.unity">附 Unity .meta 与精灵表 AnimationClip</span></label>
+          <label><span data-i18n="export.godot">Godot 目录</span> res:// <input name="godot" maxlength="200" placeholder="assets" /></label>
+          <label><span data-i18n="export.tile">TileSet 瓦片尺寸</span> <select name="tile"><option>16</option><option>32</option><option>64</option><option>128</option></select> px</label>
+        </fieldset>
+        <fieldset data-kind="atlas"><legend data-i18n="export.atlasOpts">图集选项</legend>
+          <label><span data-i18n="export.max">单个精灵最长边</span> <select name="max"><option>64</option><option>128</option><option>256</option><option>512</option><option>1024</option></select> px</label>
+          <label><span data-i18n="export.size">图集页尺寸</span> <select name="size"><option>1024</option><option>2048</option><option>4096</option></select> px</label>
+          <label><input type="checkbox" name="cocos" /> <span data-i18n="export.cocos">附 Cocos Creator 图集（.plist）</span></label>
+        </fieldset>
+      </form>
+      <ul class="export-notes muted" id="exportNotes" aria-live="polite"></ul>
+      <div class="export-go"><span id="exportCount" class="muted"></span><a class="btn primary" id="exportGo" href="#" download data-i18n="export.download">下载</a></div>
+    </div>
   </dialog>
 
   <script type="module" src="/js/main.js"></script>

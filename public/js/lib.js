@@ -1,4 +1,5 @@
 // Shared DOM / HTTP helpers for the front-end modules.
+import { getLang } from "./i18n.js";
 
 export const $ = (s) => document.querySelector(s);
 
@@ -9,7 +10,8 @@ export async function api(path, opts = {}) {
   const json = opts.body && !(opts.body instanceof FormData);
   const res = await fetch(path, {
     ...opts,
-    headers: json ? { "Content-Type": "application/json" } : undefined,
+    // Server-generated text (notes, drift reasons, errors) follows the interface language.
+    headers: { "Accept-Language": getLang(), ...(json ? { "Content-Type": "application/json" } : {}) },
     body: json ? JSON.stringify(opts.body) : opts.body,
   });
   const data = await res.json().catch(() => ({}));
@@ -19,10 +21,27 @@ export async function api(path, opts = {}) {
   return data;
 }
 
-export function toast(msg) {
+/** A short message at the bottom; with `action` ({ label, run }) it carries a button and stays longer. */
+export function toast(msg, action) {
   const t = $("#toast");
+  // A modal dialog makes the rest of the page inert and covers it: show the toast inside the
+  // topmost open dialog so it stays visible and its button clickable, else back in the page.
+  toast.home ??= t.parentElement;
+  const host = [...document.querySelectorAll("dialog[open]")].pop() ?? toast.home;
+  if (t.parentElement !== host) host.append(t);
   t.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "toast-action";
+    b.textContent = action.label;
+    b.addEventListener("click", () => {
+      t.hidden = true;
+      action.run();
+    }, { once: true });
+    t.append(" ", b);
+  }
   t.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.hidden = true), 3500);
+  toast.timer = setTimeout(() => (t.hidden = true), action ? 8000 : 3500);
 }

@@ -1,12 +1,18 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { removeBackground } from "../image/background.js";
+import { type NineSlice, fitNineSlice, parseNineSlice } from "../domain/nineSlice.js";
+import { isOpaque, removeBackground } from "../image/background.js";
+import { isOpaqueType } from "../domain/assetTypes.js";
+import { addOutline, darkestColor } from "../image/outline.js";
+import { type ColorSwap, recolor } from "../image/recolor.js";
+import { imageSize } from "../image/io.js";
 import { analyzePalette, snapToPalette } from "../image/palette.js";
 import { isPixelArt } from "../image/sizes.js";
 import { type AlignMode, type Jitter, alignFrames, detectFrameCount, joinFrames, measureJitter, sliceSheet } from "../image/spriteSheet.js";
 import { analyzeSeams, makeSeamless, type SeamReport } from "../image/tiles.js";
 import { newId, projectDir, readProjectFile, updateProject, writeProjectFile } from "../store/index.js";
 import type { Asset, Project } from "../store/types.js";
+import { msg } from "../i18n.js";
 
 // Post-processing shared by the HTTP routes and the agent's tools.
 
@@ -79,6 +85,29 @@ export async function cutoutAsset(project: Project, asset: Asset, opts: { tolera
   return p.assets.find((a) => a.id === asset.id)!;
 }
 
+/**
+ * Save (or with null, clear) a UI asset's 9-slice margins, validated against its image.
+ * Returns the updated asset, or an error message.
+ */
+export async function setNineSlice(project: Project, asset: Asset, input: unknown): Promise<Asset | string> {
+  if (asset.assetType !== "ui") return msg("err.nineUiOnly");
+  let slice: NineSlice | null = null;
+  if (input !== null) {
+    const { width, height } = await imageSize(await readProjectFile(project.id, asset.file));
+    const parsed = parseNineSlice(input, width, height);
+    if (typeof parsed === "string") return parsed;
+    slice = parsed;
+  }
+  let updated: Asset | undefined;
+  await updateProject(project.id, (p) => {
+    updated = p.assets.find((a) => a.id === asset.id);
+    if (!updated) return;
+    if (slice) updated.nineSlice = slice;
+    else delete updated.nineSlice;
+  });
+  return updated ?? msg("err.noAsset");
+}
+
 /** Save `png` as a new pending version of `asset` (parentId links them). */
 async function newVersion(project: Project, asset: Asset, png: Buffer, notes: string, actor: Actor, extra?: (a: Asset) => Promise<Partial<Asset>>) {
   const id = newId("ast");
@@ -100,6 +129,12 @@ async function newVersion(project: Project, asset: Asset, png: Buffer, notes: st
     parentId: asset.id,
     ...(asset.tags?.length ? { tags: [...asset.tags] } : {}),
   };
+  // Post-processing keeps the layout, so the 9-slice margins carry over while they still fit.
+  if (asset.nineSlice) {
+    const { width, height } = await imageSize(png);
+    const slice = fitNineSlice(asset.nineSlice, width, height);
+    if (slice) created.nineSlice = slice;
+  }
   if (extra) Object.assign(created, await extra(created));
   await updateProject(project.id, (p) => void p.assets.push(created));
   return created;
@@ -110,7 +145,7 @@ export async function seamlessVersion(project: Project, asset: Asset, overlap: n
   const before = await seamsOf(project, asset);
   const png = await makeSeamless(await readProjectFile(project.id, asset.file), { overlap, pixel: isPixelArt(project.styleGuide) });
   const after = await analyzeSeams(png);
-  const created = await newVersion(project, asset, png, `由「${asset.name}」无缝化处理（边缘融合 ${Math.round(overlap * 100)}%）`, actor);
+  const created = await newVersion(project, asset, png, msg("note.seamless", { name: asset.name, overlap: Math.round(overlap * 100) }), actor);
   return { asset: created, before, after };
 }
 
@@ -121,7 +156,9 @@ export async function alignedVersion(project: Project, asset: Asset, mode: Align
   const aligned = await alignFrames(frames, mode);
   const after = await measureJitter(aligned, mode);
   const sheet = await joinFrames(aligned);
-  const notes = `由「${asset.name}」对齐帧（${mode === "bottom" ? "底边居中" : "中心"}）：水平抖动 ${before.horizontal}→${after.horizontal}px，${mode === "bottom" ? "底边" : "垂直"} ${before.vertical}→${after.vertical}px`;
+  const notes = msg(mode === "bottom" ? "note.alignBottom" : "note.alignCenter", {
+    name: asset.name, h0: before.horizontal, h1: after.horizontal, v0: before.vertical, v1: after.vertical,
+  });
   const created = await newVersion(project, asset, sheet, notes, actor, (a) => sliceAssetFrames(project.id, a, sheet, aligned.length, asset.fps ?? 8));
   return { asset: created, before, after };
 }
@@ -129,12 +166,12 @@ export async function alignedVersion(project: Project, asset: Asset, mode: Align
 /** Snap an asset's colours to the style palette as a new version; reports palette coverage before/after. */
 export async function paletteSnapVersion(project: Project, asset: Asset, dither: "none" | "ordered", actor: Actor) {
   const hexes = project.styleGuide?.palette.map((p) => p.hex) ?? [];
-  if (!hexes.length) throw new Error("项目还没有风格指南色板");
+  if (!hexes.length) throw new Error(msg("err.noPalette"));
   const src = await readProjectFile(project.id, asset.file);
   const png = await snapToPalette(src, hexes, { dither });
   const [before, after] = await Promise.all([analyzePalette(src, hexes), analyzePalette(png, hexes)]);
   const pct = (x: number) => `${Math.round(x * 100)}%`;
-  const notes = `由「${asset.name}」吸附到色板（${dither === "ordered" ? "有序抖动" : "不抖动"}）：色板内像素 ${pct(before.coverage)}→${pct(after.coverage)}`;
+  const notes = msg(dither === "ordered" ? "note.snapOrdered" : "note.snapNone", { name: asset.name, before: pct(before.coverage), after: pct(after.coverage) });
   const palette = { coverage: after.coverage, meanDeltaE: after.meanDeltaE, offPalette: after.offPalette };
   const created = await newVersion(project, asset, png, notes, actor, async (a) => ({
     palette,
@@ -142,4 +179,59 @@ export async function paletteSnapVersion(project: Project, asset: Asset, dither:
     ...(asset.frames?.length ? await sliceAssetFrames(project.id, a, png, asset.frames.length, asset.fps ?? 8) : {}),
   }));
   return { asset: created, before, after };
+}
+
+export interface OutlineOptions {
+  /** px, 1-16 */
+  width: number;
+  /** #rrggbb; default: the darkest style-palette colour */
+  color?: string;
+}
+
+/**
+ * Add an outer outline as a new version. Returns an error message for assets with nothing to outline
+ * (drawn edge to edge, or no transparency) or bad options.
+ */
+export async function outlineVersion(project: Project, asset: Asset, opts: OutlineOptions, actor: Actor): Promise<Asset | string> {
+  if (isOpaqueType(asset.assetType)) return msg("err.opaqueOutline");
+  if (!Number.isInteger(opts.width) || opts.width < 1 || opts.width > 16) return msg("err.outlineWidth");
+  if (opts.color !== undefined && !/^#[0-9a-f]{6}$/i.test(opts.color)) return msg("err.outlineColor");
+  const src = await readProjectFile(project.id, asset.file);
+  if (await isOpaque(src)) return msg("err.needTransparency");
+  const color = (opts.color ?? darkestColor(project.styleGuide?.palette.map((p) => p.hex) ?? [])).toLowerCase();
+  const png = await addOutline(src, { width: opts.width, color, square: isPixelArt(project.styleGuide) });
+  return newVersion(project, asset, png, msg("note.outline", { name: asset.name, width: opts.width, color }), actor, async (a) =>
+    asset.frames?.length ? sliceAssetFrames(project.id, a, png, asset.frames.length, asset.fps ?? 8) : {},
+  );
+}
+
+const HEX = /^#[0-9a-f]{6}$/i;
+
+/**
+ * Colour-swap variant (e.g. an elite enemy, another outfit colour) as a new pending sibling asset:
+ * `variantOf` links it instead of `parentId`, so the original isn't marked as superseded.
+ * Returns an error message for bad input.
+ */
+export async function recolorVariant(
+  project: Project,
+  asset: Asset,
+  input: { swaps: unknown; threshold?: unknown; name?: unknown },
+  actor: Actor,
+): Promise<Asset | string> {
+  const swaps = input.swaps;
+  if (!Array.isArray(swaps) || !swaps.length || swaps.length > 8) return msg("err.swaps");
+  if (!swaps.every((s) => s && HEX.test(s.from) && HEX.test(s.to))) return msg("err.swapHex");
+  const threshold = input.threshold === undefined ? 20 : Number(input.threshold);
+  if (!Number.isFinite(threshold) || threshold < 5 || threshold > 60) return msg("err.threshold");
+  const name = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 80) : msg("note.variantName", { name: asset.name });
+  const clean = (swaps as ColorSwap[]).map((s) => ({ from: s.from.toLowerCase(), to: s.to.toLowerCase() }));
+  const png = await recolor(await readProjectFile(project.id, asset.file), clean, threshold);
+  const notes = msg("note.recolor", { name: asset.name, swaps: clean.map((s) => `${s.from}→${s.to}`).join(msg("note.listSep")) });
+  return newVersion(project, asset, png, notes, actor, async (a) => ({
+    name,
+    // A sibling, not a newer version: drop the parent link newVersion sets.
+    parentId: undefined,
+    variantOf: asset.id,
+    ...(asset.frames?.length ? await sliceAssetFrames(project.id, a, png, asset.frames.length, asset.fps ?? 8) : {}),
+  }));
 }

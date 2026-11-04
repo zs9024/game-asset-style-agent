@@ -1,10 +1,16 @@
+import sharp from "sharp";
 import { SIZE_PRESETS, isPixelArt, parseSize, resizeAsset } from "../image/sizes.js";
 import { hasTag } from "../domain/tags.js";
+import { fitNineSlice, scaleNineSlice } from "../domain/nineSlice.js";
+import { imageSize } from "../image/io.js";
 import { readProjectFile } from "../store/index.js";
 import type { Project } from "../store/types.js";
-import { buildAtlas, prepareSprite, scaleSprite } from "./atlas.js";
-import { spriteFramesTres } from "./godot.js";
+import { type AtlasInput, buildAtlas, prepareSprite, scaleSprite } from "./atlas.js";
+import { spriteFramesMultiTres, spriteFramesTres, styleBoxTextureTres, tileSetTres } from "./godot.js";
+import { actionOrder, animationFor } from "../domain/actionSet.js";
+import { type UnitySpriteMeta, animationClip, nativeMeta, spriteMeta } from "./unity.js";
 import { type ZipEntry, createZip } from "./zip.js";
+import { cocosPlist } from "./cocos.js";
 
 export interface ExportOptions {
   /** include every asset, not only approved ones */
@@ -17,10 +23,40 @@ export interface ExportOptions {
   sizes?: boolean;
   /** folder under res:// where the bundle is unzipped in a Godot project (for .tres paths) */
   godotRoot?: string;
+  /** add a Unity TextureImporter .meta next to every image */
+  unity?: boolean;
+  /** px per tile in the Godot TileSet built from the exported tiles (default 32) */
+  tileSize?: number;
+  /** file names: as the asset is named, or ASCII only */
+  names?: NameStyle;
 }
+
+/** Tiles per row in the TileSet texture. */
+const TILESET_COLUMNS = 8;
+
+/** Types drawn standing on the ground: their sprites pivot at the bottom centre. */
+const STANDING_TYPES = new Set(["character", "enemy", "sprite_sheet", "prop"]);
 
 /** Strip characters that are unsafe in archive paths. */
 export const safeName = (s: string) => s.replace(/[\\/:*?"<>|\s]+/g, "_").replace(/^_+|_+$/g, "") || "asset";
+
+/** How exported files are named: from the asset name as is, or ASCII only (safe for engines, VCS and any OS). */
+export type NameStyle = "original" | "ascii";
+
+/**
+ * Returns the file stem for each asset. "ascii" keeps names that are already ASCII-safe and turns the
+ * rest into "<type>_01", "<type>_02"… per type; the manifest still records the original name.
+ */
+export function stemNamer(style: NameStyle = "original") {
+  const counts = new Map<string, number>();
+  return (a: { name: string; assetType: string }) => {
+    const name = safeName(a.name);
+    if (style === "original" || /^[A-Za-z0-9_.-]+$/.test(name)) return name;
+    const n = (counts.get(a.assetType) ?? 0) + 1;
+    counts.set(a.assetType, n);
+    return `${a.assetType}_${String(n).padStart(2, "0")}`;
+  };
+}
 
 /** Returns a de-duplicating namer: "a", "a_2", "a_3"… */
 export function uniqueNamer() {
@@ -53,21 +89,50 @@ export async function buildExport(project: Project, opts: ExportOptions = {}): P
   const unique = uniqueNamer();
   const manifest = [];
   const pixel = isPixelArt(project.styleGuide);
+  const root = (opts.godotRoot ?? "assets").replace(/^res:\/\//, "").replace(/^\/+|\/+$/g, "");
+  const resPath = (f: string) => `res://${root ? `${root}/` : ""}${f}`;
+  const stemOf = stemNamer(opts.names);
+  /** Exported sprite sheets, for the per-character animation sets below. */
+  const sheets: { asset: (typeof assets)[number]; stem: string; paths: string[] }[] = [];
   for (const a of assets) {
-    const base = unique(`${a.assetType}/${safeName(a.name)}`);
+    const stem = stemOf(a);
+    const base = unique(`${a.assetType}/${stem}`);
     const ext = a.file.split(".").pop();
     const original = await readProjectFile(project.id, a.file);
     const files: Record<string, string | string[]> = { image: `${base}.${ext}` };
     entries.push({ name: `${base}.${ext}`, data: original });
+    // Re-checked against the real image: stored margins may come from an imported backup.
+    const size = a.nineSlice || opts.unity ? await imageSize(original) : null;
+    const nineSlice = size && fitNineSlice(a.nineSlice, size.width, size.height);
+    /** Unity .meta beside an image; the GUID follows the asset id and role, not the (renamable) file name. */
+    const meta = (name: string, role: string, o: Omit<UnitySpriteMeta, "seed" | "pixel"> = {}) => {
+      if (!opts.unity) return;
+      const repeat = a.assetType === "tile";
+      entries.push({ name: `${name}.meta`, data: Buffer.from(spriteMeta({ seed: `${project.id}/${a.id}/${role}`, pixel, repeat, ...o })) });
+    };
+    const standing = STANDING_TYPES.has(a.assetType);
+    const sheet = (w: number, h: number) =>
+      a.frames?.length ? { count: a.frames.length, width: Math.floor(w / a.frames.length), height: h, name: stem } : undefined;
+    meta(`${base}.${ext}`, "image", { nineSlice, bottomPivot: standing, frames: size ? sheet(size.width, size.height) : undefined });
+    if (nineSlice) {
+      files.godot = `${base}.tres`;
+      entries.push({ name: `${base}.tres`, data: Buffer.from(styleBoxTextureTres(resPath(`${base}.${ext}`), nineSlice)) });
+    }
     if (opts.sizes) {
       const sized: string[] = (files.sizes = []);
       for (const spec of SIZE_PRESETS[a.assetType] ?? []) {
         const name = `${base}@${spec}.png`;
         sized.push(name);
-        entries.push({
-          name,
-          data: await resizeAsset(original, { ...parseSize(spec)!, assetType: a.assetType, pixel, frames: a.frames?.length }),
-        });
+        const data = await resizeAsset(original, { ...parseSize(spec)!, assetType: a.assetType, pixel, frames: a.frames?.length });
+        entries.push({ name, data });
+        if (opts.unity && size) {
+          const out = await imageSize(data);
+          meta(name, `size:${spec}`, {
+            nineSlice: nineSlice && scaleNineSlice(nineSlice, size, out),
+            bottomPivot: standing,
+            frames: sheet(out.width, out.height),
+          });
+        }
       }
     }
     if (a.gif) {
@@ -80,16 +145,71 @@ export async function buildExport(project: Project, opts: ExportOptions = {}): P
         const name = `${base}_frames/${String(i).padStart(2, "0")}.png`;
         frames.push(name);
         entries.push({ name, data: await readProjectFile(project.id, f) });
+        meta(name, `frame:${i}`, { bottomPivot: true });
       }
-      const root = (opts.godotRoot ?? "assets").replace(/^res:\/\//, "").replace(/^\/+|\/+$/g, "");
-      const tres = spriteFramesTres(frames.map((f) => `res://${root ? `${root}/` : ""}${f}`), { name: "default", fps: a.fps ?? 8 });
+      if (opts.unity) {
+        files.unity = `${base}.anim`;
+        const clip = animationClip({ name: stem, sheetSeed: `${project.id}/${a.id}/image`, count: a.frames.length, fps: a.fps ?? 8 });
+        entries.push({ name: `${base}.anim`, data: Buffer.from(clip) });
+        entries.push({ name: `${base}.anim.meta`, data: Buffer.from(nativeMeta(`${project.id}/${a.id}/anim`)) });
+      }
+      sheets.push({ asset: a, stem, paths: frames.map(resPath) });
+      const tres = spriteFramesTres(frames.map(resPath), { name: "default", fps: a.fps ?? 8 });
       files.godot = `${base}.tres`;
       entries.push({ name: `${base}.tres`, data: Buffer.from(tres) });
     }
     manifest.push({
-      id: a.id, name: a.name, type: a.assetType, status: a.status, score: a.score ?? null, tags: a.tags ?? [],
+      id: a.id, name: a.name, type: a.assetType, status: a.status, score: a.score ?? null, tags: a.tags ?? [], nineSlice: nineSlice ?? null,
       notes: a.notes ?? null, prompt: a.prompt, provider: a.provider, createdAt: a.createdAt, fps: a.fps ?? null, files,
     });
+  }
+  // One SpriteFrames per tag shared by 2+ sprite sheets (e.g. an action set): every sheet becomes a named animation.
+  const animationSets: { tag: string; file: string; animations: { name: string; asset: string; fps: number; loop: boolean }[] }[] = [];
+  const tagNames = new Map<string, string>();
+  for (const sh of sheets) for (const t of sh.asset.tags ?? []) if (!tagNames.has(t.toLowerCase())) tagNames.set(t.toLowerCase(), t);
+  const setStem = stemNamer(opts.names);
+  const setFiles = uniqueNamer();
+  for (const tag of tagNames.values()) {
+    const members = sheets
+      .filter((sh) => hasTag(sh.asset.tags, tag))
+      .sort((a, b) => actionOrder(a.asset.name, tag) - actionOrder(b.asset.name, tag) || a.asset.name.localeCompare(b.asset.name));
+    if (members.length < 2) continue;
+    const animName = uniqueNamer();
+    const anims = members.map((sh) => {
+      const { name, loop } = animationFor(sh.asset.name, tag, opts.names === "ascii", sh.stem);
+      return { name: animName(name), paths: sh.paths, fps: sh.asset.fps ?? 8, loop, asset: sh.asset.id };
+    });
+    const file = `_animations/${setFiles(setStem({ name: tag, assetType: "animations" }))}.tres`;
+    entries.push({ name: file, data: Buffer.from(spriteFramesMultiTres(anims)) });
+    animationSets.push({ tag, file, animations: anims.map(({ name, asset, fps, loop }) => ({ name, asset, fps, loop })) });
+  }
+
+  const tiles = assets.filter((a) => a.assetType === "tile");
+  let tileset: { image: string; tres: string; tileSize: number; tiles: { id: string; name: string; coords: [number, number] }[] } | null = null;
+  if (tiles.length) {
+    // All tiles at one game size in a grid texture, plus a TileSet that indexes them.
+    const size = opts.tileSize ?? 32;
+    const columns = Math.min(TILESET_COLUMNS, tiles.length);
+    const rows = Math.ceil(tiles.length / columns);
+    const cells = await Promise.all(
+      tiles.map(async (a, i) => ({
+        input: await resizeAsset(await readProjectFile(project.id, a.file), { w: size, h: size, assetType: "tile", pixel }),
+        left: (i % columns) * size,
+        top: Math.floor(i / columns) * size,
+      })),
+    );
+    const png = await sharp({ create: { width: columns * size, height: rows * size, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+      .composite(cells)
+      .png()
+      .toBuffer();
+    tileset = {
+      image: "tile/tileset.png",
+      tres: "tile/tileset.tres",
+      tileSize: size,
+      tiles: tiles.map((a, i) => ({ id: a.id, name: a.name, coords: [i % columns, Math.floor(i / columns)] })),
+    };
+    entries.push({ name: tileset.image, data: png });
+    entries.push({ name: tileset.tres, data: Buffer.from(tileSetTres(resPath(tileset.image), { tileSize: size, count: tiles.length, columns })) });
   }
   for (const [i, r] of project.refs.entries()) {
     entries.push({ name: `_references/ref_${i + 1}.png`, data: await readProjectFile(project.id, r.file) });
@@ -98,12 +218,14 @@ export async function buildExport(project: Project, opts: ExportOptions = {}): P
   entries.push({ name: "style-guide.json", data: json(project.styleGuide) });
   entries.push({
     name: "manifest.json",
-    data: json({ project: project.name, exportedAt: new Date().toISOString(), count: manifest.length, assets: manifest }),
+    data: json({ project: project.name, exportedAt: new Date().toISOString(), count: manifest.length, assets: manifest, tileset, animationSets }),
   });
   return { filename: `${safeName(project.name)}_assets.zip`, zip: createZip(entries) };
 }
 
 export interface AtlasExportOptions {
+  /** frame names: as the asset is named, or ASCII only */
+  names?: NameStyle;
   all?: boolean;
   ids?: string[];
   tag?: string;
@@ -111,6 +233,8 @@ export interface AtlasExportOptions {
   maxSprite?: number;
   /** longest side of an atlas page, px */
   maxSize?: number;
+  /** also write a cocos2d plist per page (Cocos Creator SpriteAtlas) */
+  cocos?: boolean;
 }
 
 const ATLAS_README = `Texture atlas exported by Game Asset Agent
@@ -121,7 +245,18 @@ animations.json            Phaser 3 animations for sprite sheets (this.anims.fro
 Phaser 3:
   preload() { this.load.atlas("atlas", "atlas.png", "atlas.json"); this.load.json("anims", "animations.json"); }
   create()  { this.anims.fromJSON(this.cache.json.get("anims")); this.add.sprite(100, 100, "atlas", "item_icon/sword"); }
+UI frames with 9-slice margins carry "scale9Borders" (Phaser 3.60+ reads them):
+  this.add.nineslice(200, 100, "atlas", "ui/panel", 320, 120);
 With several pages, load each as atlas_0, atlas_1, … (texture keys match the page file names).
+`;
+
+const COCOS_README = `
+Cocos Creator / cocos2d-x:
+atlas*.plist               cocos2d plist (format 3) for each page
+  Cocos Creator: drop atlas.plist and atlas.png into assets/ together; it imports as a SpriteAtlas
+  and each frame becomes a SpriteFrame named as in the JSON (e.g. "item_icon/sword").
+  cocos2d-x:     SpriteFrameCache::getInstance()->addSpriteFramesWithFile("atlas.plist");
+  Nine-slice borders are not part of the plist format; set them on the SpriteFrame in the editor.
 `;
 
 /**
@@ -134,10 +269,11 @@ export async function buildAtlasExport(project: Project, opts: AtlasExportOption
   const pixel = isPixelArt(project.styleGuide);
   const maxSprite = opts.maxSprite ?? 256;
   const unique = uniqueNamer();
-  const images: { name: string; data: Buffer }[] = [];
+  const stemOf = stemNamer(opts.names);
+  const images: AtlasInput[] = [];
   const animations: { key: string; frames: string[]; fps: number }[] = [];
   for (const a of assets) {
-    const key = unique(`${a.assetType}/${safeName(a.name)}`);
+    const key = unique(`${a.assetType}/${stemOf(a)}`);
     if (a.frames?.length) {
       const frames: string[] = [];
       for (const [i, f] of a.frames.entries()) {
@@ -148,7 +284,17 @@ export async function buildAtlasExport(project: Project, opts: AtlasExportOption
       }
       animations.push({ key, frames, fps: a.fps ?? 8 });
     } else {
-      images.push({ name: key, data: await prepareSprite(await readProjectFile(project.id, a.file), maxSprite, pixel) });
+      const data = await readProjectFile(project.id, a.file);
+      const size = a.nineSlice ? await imageSize(data) : null;
+      const slice = size && fitNineSlice(a.nineSlice, size.width, size.height);
+      if (slice && size) {
+        // No trim: the margins are measured from the image edges. Scale them with the sprite.
+        const scaled = await scaleSprite(data, maxSprite, pixel);
+        const m = scaleNineSlice(slice, size, await imageSize(scaled));
+        images.push({ name: key, data: scaled, nineSlice: m });
+      } else {
+        images.push({ name: key, data: await prepareSprite(data, maxSprite, pixel) });
+      }
     }
   }
   const atlas = await buildAtlas(images, { maxSize: opts.maxSize ?? 2048 });
@@ -159,6 +305,7 @@ export async function buildAtlasExport(project: Project, opts: AtlasExportOption
   for (const p of atlas.pages) {
     entries.push({ name: p.image, data: p.png });
     entries.push({ name: p.image.replace(/\.png$/, ".json"), data: Buffer.from(JSON.stringify(p.json, null, 2)) });
+    if (opts.cocos) entries.push({ name: p.image.replace(/\.png$/, ".plist"), data: Buffer.from(cocosPlist(p.json as Parameters<typeof cocosPlist>[0])) });
   }
   entries.push({
     name: "animations.json",
@@ -178,6 +325,6 @@ export async function buildAtlasExport(project: Project, opts: AtlasExportOption
       ),
     ),
   });
-  entries.push({ name: "README.txt", data: Buffer.from(ATLAS_README) });
+  entries.push({ name: "README.txt", data: Buffer.from(ATLAS_README + (opts.cocos ? COCOS_README : "")) });
   return { filename: `${safeName(project.name)}_atlas.zip`, zip: createZip(entries) };
 }

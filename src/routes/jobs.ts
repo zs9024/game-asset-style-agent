@@ -1,8 +1,10 @@
 import { Router } from "express";
+import { ACTION_SET_TYPES, actionSetRequest, isActionKey } from "../domain/actionSet.js";
 import { type AgentEvent, jobs, runningJobFor, startJob } from "../agent/index.js";
 import { MAX_REDRAWS } from "../agent/events.js";
 import { loadProject } from "../store/index.js";
 import { pid } from "./util.js";
+import { msg } from "../i18n.js";
 
 export const jobsRouter = Router();
 
@@ -20,8 +22,8 @@ jobsRouter.post("/api/projects/:id/run", async (req, res) => {
   const projectId = pid(req);
   await loadProject(projectId);
   const running = runningJobFor(projectId);
-  if (running) return void res.status(409).json({ error: "该项目已有任务在运行", jobId: running.id });
-  if ((parseRedraws(req.body)?.length ?? 0) > MAX_REDRAWS) return void res.status(400).json({ error: `一次最多重画 ${MAX_REDRAWS} 个素材` });
+  if (running) return void res.status(409).json({ error: msg("err.running"), jobId: running.id });
+  if ((parseRedraws(req.body)?.length ?? 0) > MAX_REDRAWS) return void res.status(400).json({ error: msg("err.maxRedraws", { n: MAX_REDRAWS }) });
   const job = startJob({
     projectId,
     request: String(req.body?.request ?? "").slice(0, 4000),
@@ -34,15 +36,38 @@ jobsRouter.post("/api/projects/:id/run", async (req, res) => {
   res.json({ jobId: job.id });
 });
 
+/** Animation set for a character / enemy: { actions: ["idle", "walk", …] } starts an agent run with one sprite sheet per action. */
+jobsRouter.post("/api/projects/:id/assets/:assetId/action-set", async (req, res) => {
+  const projectId = pid(req);
+  const project = await loadProject(projectId);
+  const asset = project.assets.find((a) => a.id === req.params.assetId);
+  if (!asset) return void res.status(404).json({ error: msg("err.noAsset") });
+  if (!ACTION_SET_TYPES.has(asset.assetType)) return void res.status(400).json({ error: msg("err.actionSetType") });
+  const actions = Array.isArray(req.body?.actions) ? [...new Set(req.body.actions as unknown[])].filter(isActionKey) : [];
+  if (!actions.length) return void res.status(400).json({ error: msg("err.needActions") });
+  const running = runningJobFor(projectId);
+  if (running) return void res.status(409).json({ error: msg("err.running"), jobId: running.id });
+  const job = startJob({
+    projectId,
+    request: actionSetRequest(asset, actions),
+    assetTypes: ["sprite_sheet"],
+    actionSet: { assetId: asset.id, name: asset.name, actions },
+    providerId: req.body?.provider ? String(req.body.provider) : undefined,
+    continueConversation: req.body?.continueConversation !== false,
+    budget: typeof req.body?.budget === "object" && req.body.budget ? req.body.budget : undefined,
+  });
+  res.json({ jobId: job.id });
+});
+
 /** Regenerate one asset from an edited prompt, straight to the image model (no Claude). */
 jobsRouter.post("/api/projects/:id/assets/:assetId/regenerate", async (req, res) => {
   const projectId = pid(req);
   const project = await loadProject(projectId);
-  if (!project.assets.some((a) => a.id === req.params.assetId)) return void res.status(404).json({ error: "素材不存在" });
+  if (!project.assets.some((a) => a.id === req.params.assetId)) return void res.status(404).json({ error: msg("err.noAsset") });
   const prompt = String(req.body?.prompt ?? "").trim();
-  if (prompt.length < 10) return void res.status(400).json({ error: "prompt 太短" });
+  if (prompt.length < 10) return void res.status(400).json({ error: msg("err.promptShort") });
   const running = runningJobFor(projectId);
-  if (running) return void res.status(409).json({ error: "该项目已有任务在运行", jobId: running.id });
+  if (running) return void res.status(409).json({ error: msg("err.running"), jobId: running.id });
   const job = startJob({
     projectId,
     request: "",

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { before, describe, it } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import { solidPng, useTempDataDir, validStyleGuide } from "./helpers.js";
+import sharp from "sharp";
+import { panel, solidPng, useTempDataDir, validStyleGuide } from "./helpers.js";
 
 useTempDataDir();
 const store = await import("../src/store/index.js");
@@ -33,6 +34,7 @@ describe("tool definitions", () => {
   it("every tool has a schema whose required fields are declared", () => {
     assert.deepEqual(tools.map((t) => t.name), [
       "save_style_guide", "generate_image", "review_asset", "fix_tile_seams", "align_sprite_frames", "remove_background", "snap_to_palette",
+      "set_nine_slice", "add_outline", "recolor_variant", "check_consistency",
     ]);
     for (const t of tools) {
       const props = Object.keys(t.input_schema.properties ?? {});
@@ -180,6 +182,16 @@ describe("post-processing tools", () => {
     assert.match(textOf(sheet), /Frame jitter check: the character drifts \d+(\.\d+)?px horizontally and \d+(\.\d+)?px vertically/);
   });
 
+  it("generate_image takes a sprite sheet's fps, and a redraw keeps it", async () => {
+    const job = fakeJob(projectId);
+    await runTool(job, mock, call("generate_image", { name: "奔跑", asset_type: "sprite_sheet", prompt: "Run cycle in one row, 4 frames", aspect: "landscape", transparent_background: true, frames: 4, fps: 12 }));
+    const run = (await store.loadProject(projectId)).assets.at(-1)!;
+    assert.equal(run.fps, 12);
+    await runTool(job, mock, call("generate_image", { name: "奔跑", asset_type: "sprite_sheet", prompt: "Run cycle in one row, 4 frames, longer stride", aspect: "landscape", transparent_background: true, frames: 4, replaces_asset_id: run.id }));
+    assert.equal((await store.loadProject(projectId)).assets.at(-1)!.fps, 12);
+    assert.match(textOf(await runTool(job, mock, call("generate_image", { name: "x", asset_type: "sprite_sheet", prompt: "Run cycle in one row", aspect: "landscape", transparent_background: true, fps: 99 }))), /INVALID_JSON/);
+  });
+
   it("fix_tile_seams makes a seamless new version owned by the run", async () => {
     const id = await addSeamyTile();
     const job = fakeJob(projectId);
@@ -190,6 +202,107 @@ describe("post-processing tools", () => {
     assert.deepEqual([created.parentId, created.reviewer, created.runId, created.status], [id, "agent", "job_test", "pending_review"]);
     assert.deepEqual(created.tags, ["草地"], "post-processed versions keep tags");
     assert.ok(job.events.some((e) => e.type === "asset"));
+  });
+
+  it("set_nine_slice detects or takes margins, saves them in place and shows a stretched preview", async () => {
+    const add = async (name: string, png: Buffer, assetType = "ui") => {
+      const id = `ast_${name}`;
+      await store.writeProjectFile(projectId, `assets/${id}.png`, png);
+      await store.updateProject(projectId, (p) => void p.assets.push({
+        id, name, assetType, prompt: "panel", file: `assets/${id}.png`, mime: "image/png", status: "approved", runId: "r", provider: "mock", createdAt: new Date().toISOString(),
+      }));
+      return id;
+    };
+    const id = await add("panel", await panel(100, 60));
+    const job = fakeJob(projectId);
+    const detected = await runTool(job, mock, call("set_nine_slice", { asset_id: id }));
+    assert.notEqual(detected.is_error, true);
+    assert.match(textOf(detected), /\(detected\): left 12, top 12, right 12, bottom 12 of 100×60/);
+    assert.ok((detected.content as { type: string }[]).some((c) => c.type === "image"), "returns the stretched preview");
+    const saved = () => store.loadProject(projectId).then((p) => p.assets.find((a) => a.id === id)!.nineSlice);
+    assert.deepEqual(await saved(), { left: 12, top: 12, right: 12, bottom: 12 });
+    assert.ok(job.events.some((e) => e.type === "asset"));
+
+    const manual = await runTool(fakeJob(projectId), mock, call("set_nine_slice", { asset_id: id, left: 20, top: 10, right: 20, bottom: 10 }));
+    assert.doesNotMatch(textOf(manual), /detected/);
+    assert.deepEqual(await saved(), { left: 20, top: 10, right: 20, bottom: 10 });
+
+    const err = async (input: object) => textOf(await runTool(fakeJob(projectId), mock, call("set_nine_slice", input)));
+    assert.match(await err({ asset_id: id, left: 5 }), /all four margins/);
+    assert.match(await err({ asset_id: id, left: 60, top: 1, right: 50, bottom: 1 }), /100px.*\(image 100×60\)/);
+    assert.match(await err({ asset_id: await add("flat", await solidPng(40, 40, "#336699")) }), /No stretchable band found automatically \(image 40×40\)/);
+    assert.match(await err({ asset_id: await add("rock", await panel(100, 60), "prop") }), /only applies to ui/);
+    assert.match(await err({ asset_id: "ast_nope" }), /Unknown asset_id/);
+    assert.match(await err({ asset_id: id, left: -1 }), /INVALID_JSON/);
+  });
+
+  it("add_outline makes an outlined new version, and refuses opaque or tile assets", async () => {
+    const add = async (name: string, png: Buffer, assetType: string) => {
+      const id = `ast_${name}`;
+      await store.writeProjectFile(projectId, `assets/${id}.png`, png);
+      await store.updateProject(projectId, (p) => void p.assets.push({
+        id, name, assetType, prompt: "x", file: `assets/${id}.png`, mime: "image/png", status: "approved", runId: "r", provider: "mock", createdAt: new Date().toISOString(),
+      }));
+      return id;
+    };
+    const sword = await add("sword", await sharp({ create: { width: 32, height: 32, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+      .composite([{ input: { create: { width: 8, height: 20, channels: 4, background: { r: 200, g: 200, b: 220, alpha: 1 } } }, left: 12, top: 6 }])
+      .png().toBuffer(), "item_icon");
+    const job = fakeJob(projectId);
+    const r = await runTool(job, mock, call("add_outline", { asset_id: sword, width: 1, color: "#000000" }));
+    assert.match(textOf(r), /with a 1px outline/);
+    const created = (await store.loadProject(projectId)).assets.at(-1)!;
+    assert.deepEqual([created.parentId, created.reviewer, created.status], [sword, "agent", "pending_review"]);
+    assert.ok(job.events.some((e) => e.type === "asset"));
+    const err = async (input: object) => textOf(await runTool(fakeJob(projectId), mock, call("add_outline", input)));
+    assert.match(await err({ asset_id: await add("solid", await solidPng(16, 16, "#336699"), "item_icon") }), /没有透明背景/);
+    assert.match(await err({ asset_id: await add("ground", await solidPng(16, 16, "#336699"), "tile") }), /不需要描边/);
+    assert.match(await err({ asset_id: "ast_nope" }), /Unknown asset_id/);
+    assert.match(await err({ asset_id: sword, color: "red" }), /INVALID_JSON/);
+  });
+
+  it("recolor_variant makes a named variant and reports the original's colours", async () => {
+    const id = `ast_slime`;
+    await store.writeProjectFile(projectId, `assets/${id}.png`, await solidPng(16, 16, "#33aa44"));
+    await store.updateProject(projectId, (p) => void p.assets.push({
+      id, name: "史莱姆", assetType: "enemy", prompt: "x", file: `assets/${id}.png`, mime: "image/png", status: "approved", runId: "r", provider: "mock", createdAt: new Date().toISOString(),
+    }));
+    const job = fakeJob(projectId);
+    const r = await runTool(job, mock, call("recolor_variant", { asset_id: id, swaps: [{ from: "#33aa44", to: "#aa3333" }], name: "精英史莱姆" }));
+    assert.match(textOf(r), /New variant asset_id=ast_\w+ "精英史莱姆" \(of ast_slime\)\. The original's main colours: #33aa44 100%/);
+    const created = (await store.loadProject(projectId)).assets.at(-1)!;
+    assert.deepEqual([created.variantOf, created.parentId, created.reviewer], [id, undefined, "agent"]);
+    assert.ok(job.events.some((e) => e.type === "asset"));
+    const err = async (input: object) => textOf(await runTool(fakeJob(projectId), mock, call("recolor_variant", input)));
+    assert.match(await err({ asset_id: "ast_nope", swaps: [{ from: "#000000", to: "#ffffff" }] }), /Unknown asset_id/);
+    assert.match(await err({ asset_id: id, swaps: [] }), /INVALID_JSON/);
+  });
+
+  it("check_consistency lists the assets drifting from the set, marking this run's", async () => {
+    const p = await projectWithRef();
+    await store.updateProject(p.id, (q) => void (q.styleGuide = validStyleGuide()));
+    const add = async (id: string, color: string, runId: string) => {
+      await store.writeProjectFile(p.id, `assets/${id}.png`, await solidPng(24, 24, color));
+      await store.updateProject(p.id, (q) => void q.assets.push({
+        id, name: id, assetType: "item_icon", prompt: "x", file: `assets/${id}.png`, mime: "image/png", status: "approved", runId, provider: "mock", createdAt: new Date().toISOString(),
+      }));
+    };
+    for (const [i, c] of ["#112233", "#aabbcc", "#ffeedd", "#aabbcc"].entries()) await add(`ast_ok${i}`, c, "old");
+    await add("ast_pink", "#ff00ff", "job_test");
+    const r = await runTool(fakeJob(p.id), mock, call("check_consistency", {}));
+    const text = String(r.content);
+    assert.match(text, /^Measured 5 current assets\. Project median: on-palette 100%/);
+    assert.match(text, /Clearly drifting, most first:\n- ast_pink "ast_pink" \[item_icon\] \(made in this run\): drift \d+/);
+    assert.doesNotMatch(text, /ast_ok/);
+    const bare = await store.createProject("no palette");
+    assert.match(String((await runTool(fakeJob(bare.id), mock, call("check_consistency", {}))).content), /no style guide palette/);
+    assert.match(String((await runTool(fakeJob(p.id), mock, call("check_consistency", { limit: 99 }))).content), /INVALID_JSON/);
+    await store.updateProject(p.id, (q) => {
+      for (const a of q.assets) if (a.id === "ast_ok0" || a.id === "ast_ok1") a.tags = ["盾"];
+    });
+    const group = String((await runTool(fakeJob(p.id), mock, call("check_consistency", { tag: "盾" }))).content);
+    assert.match(group, /^Measured 2 current assets tagged "盾"\. Group median:/);
+    assert.doesNotMatch(group, /ast_pink/);
   });
 
   it("align_sprite_frames removes the mock walk cycle's bobbing", async () => {
@@ -229,12 +342,25 @@ describe("post-processing tools", () => {
 });
 
 describe("buildIntro", () => {
+  it("names the interface language, Chinese unless the request asked for English", async () => {
+    const project = await projectWithRef();
+    assert.match(buildIntro({ project, request: "x", assetTypes: [] }), /^Interface language: Simplified Chinese/);
+    assert.match(buildIntro({ project, request: "x", assetTypes: [], lang: "en" }), /^Interface language: English\./);
+  });
+
   it("passes the user's reference notes, numbered like the images", async () => {
     const project = await projectWithRef();
     project.refs.push({ id: "ref_2", file: "refs/r.png", mime: "image/png", originalName: "b", note: "只参考角色比例" });
     const text = buildIntro({ project, request: "x", assetTypes: [] });
     assert.match(text, /notes on what to take from each reference[\s\S]*- Reference 2: 只参考角色比例/);
     assert.doesNotMatch(text, /- Reference 1:/);
+  });
+
+  it("passes the team's conventions when set", async () => {
+    const project = await projectWithRef();
+    assert.doesNotMatch(buildIntro({ project, request: "x", assetTypes: [] }), /conventions/);
+    project.conventions = "图标统一 2px 深色描边";
+    assert.match(buildIntro({ project, request: "x", assetTypes: [] }), /team's own conventions[^\n]*\n图标统一 2px 深色描边/);
   });
 
   it("asks for a style guide when there is none and lists selected types", async () => {
@@ -260,6 +386,21 @@ describe("buildIntro", () => {
     assert.match(text, /old prompt/);
     assert.match(text, /Approved assets so far/);
     assert.doesNotMatch(text, /User request/);
+    assert.doesNotMatch(text, /Earlier notes/, "no history, no section");
+  });
+
+  it("passes earlier notes from the asset and the versions it came from, newest first, without this redraw's feedback", async () => {
+    const project = await projectWithRef();
+    const base = { assetType: "item_icon", prompt: "p", file: "assets/a.png", mime: "image/png", runId: "job", provider: "mock", createdAt: "" } as const;
+    project.assets.push(
+      { ...base, id: "v1", name: "剑", status: "rejected", noteLog: [{ at: "2026-01-01T00:00:00Z", by: "agent", notes: "刀刃太短", status: "rejected" }] },
+      { ...base, id: "v2", name: "剑", status: "rejected", parentId: "v1", noteLog: [{ at: "2026-01-02T00:00:00Z", by: "user", notes: "颜色偏紫", status: "rejected" }, { at: "2026-01-03T00:00:00Z", by: "user", notes: "改成蓝色", status: "rejected" }] },
+      { ...base, id: "other", name: "盾", status: "rejected", noteLog: [{ at: "2026-01-04T00:00:00Z", by: "user", notes: "无关", status: "rejected" }] },
+    );
+    const text = buildIntro({ project, request: "", assetTypes: [], redraws: [{ target: project.assets[1], feedback: "改成蓝色" }] });
+    assert.match(text, /Earlier notes on this asset and its previous versions[^\n]*\n {3}- 2026-01-02 user \(rejected\): 颜色偏紫\n {3}- 2026-01-01 your review \(rejected\): 刀刃太短/);
+    assert.doesNotMatch(text, /无关/, "other assets' notes stay out");
+    assert.equal((text.match(/改成蓝色/g) ?? []).length, 1, "this redraw's feedback is not repeated as history");
   });
 });
 

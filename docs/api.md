@@ -5,6 +5,7 @@
 - 基础地址：`http://localhost:5173`
 - 错误响应：`{ "error": "原因" }`，状态码 400（参数不对）、401（未登录）、404（不存在）、409（冲突）、500
 - id 格式：项目 `prj_…`，素材 `ast_…`，参考图 `ref_…`，任务 `job_…`
+- 语言：错误信息、素材备注、一致性原因、运行日志等服务端文案按 `?lang=en|zh` 或 `Accept-Language` 生成，都没有时为中文（已保存的备注保持生成时的语言）
 
 ## 鉴权
 
@@ -93,7 +94,7 @@ Seedream 配置 `ARK_API_KEY` 后可用，默认模型 `doubao-seedream-5-0-flas
 
 ### `POST /api/projects`
 
-请求 `{ "name": "蘑菇森林" }`，返回完整项目对象。
+请求 `{ "name": "蘑菇森林" }`，返回完整项目对象。加 `"styleFrom": "prj_xxx"` 时复制该项目的风格指南与参考图（含备注），新项目直接沿用同一画风；素材与对话不复制。源项目不存在时返回 404。不复用时可加 `"preset": "pixel" | "flat" | "watercolor"` 从内置风格开始（`GET /api/config` 的 `stylePresets` 列出可选项），没有参考图也能直接运行。
 
 ### `GET /api/projects/:id`
 
@@ -101,7 +102,7 @@ Seedream 配置 `ARK_API_KEY` 后可用，默认模型 `doubao-seedream-5-0-flas
 
 ### `PATCH /api/projects/:id`
 
-`{ "name": "新名字" }` 改名；`{ "resetStyle": true }` 清空风格指南（下次运行重新提炼）。
+`{ "name": "新名字" }` 改名；`{ "resetStyle": true }` 清空风格指南（下次运行重新提炼）；`{ "conventions": "图标统一 2px 描边……" }` 设置项目约定（≤ 2000 字，空字符串清除）：每次运行都随请求发给 Claude，并写进风格说明书；复用风格与项目备份会一并带上。
 
 ### `DELETE /api/projects/:id`
 
@@ -142,6 +143,10 @@ Seedream 配置 `ARK_API_KEY` 后可用，默认模型 `doubao-seedream-5-0-flas
 ### `POST /api/projects/:id/cleanup`
 
 删除不属于任何素材或参考图的文件：`{ removed, bytes }`。有任务运行时返回 409。
+
+### `GET /api/projects/:id/style-sheet.html`
+
+风格说明书：单个 HTML 文件（图片内嵌，无脚本），含风格摘要、色板（色值与用途）、画风规则、避免事项、prompt 前缀、参考图与备注、各类型最多 6 个已通过素材样例，适合发给外包美术或直接打印。`?download=1` 作为附件下载。
 
 ### `GET /api/projects/:id/backup.zip`
 
@@ -229,6 +234,10 @@ Server-Sent Events。连接后先回放已发生的事件，再实时推送，�
 curl -N http://localhost:5173/api/jobs/job_xxx/events
 ```
 
+### `POST /api/projects/:id/assets/:assetId/action-set`
+
+为角色 / 敌人生成动作套装：`{ "actions": ["idle", "walk", "attack", "hurt"], "provider": "openai" }`。可选动作见 `GET /api/config` 的 `actionPresets`（待机、行走、奔跑、攻击、受击、跳跃、倒下，各自带默认帧数与帧率）。启动一次 Agent 任务：每个动作一张精灵表，都以该素材为一致性参考、打上角色名标签。`provider`、`budget`、`continueConversation` 与 `/run` 相同。返回 `{ jobId }`；已有任务运行时返回 409。
+
 ### `POST /api/projects/:id/assets/:assetId/regenerate`
 
 用编辑后的 prompt 直接调用图像模型生成新版本（不经过 Agent，不消耗 Agent tokens）：`{ "prompt": "…", "provider": "openai", "budget": {…} }`。返回 `{ jobId }`，进度同样从事件流读取；新素材待审核，`parentId` 指向原素材。用量记录的 `mode` 为 `manual`。
@@ -239,9 +248,17 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 
 ## 素材
 
+### `POST /api/projects/:id/assets/import`
+
+导入自己的图片作为素材（multipart）：字段 `images`（最多 20 张，png/jpg/webp/gif，每张 ≤ 20 MB）、`assetType`（必填，素材类型）、`frames`（精灵表可选，省略时自动检测）、`cutout=1`（可选：对没有透明通道的图片自动去除纯色背景，原图保留可恢复；背景与瓦片类型不处理）。名称取自文件名；状态为「已通过」（由用户导入），可使用全部后处理、换色、九宫格与导出。有风格指南时附色板检测。返回 `{ imported: [id…], project }`。
+
+```bash
+curl -s -F assetType=item_icon -F images=@sword.png -F images=@shield.png "$BASE/api/projects/$P/assets/import"
+```
+
 ### `PATCH /api/projects/:id/assets/:assetId`
 
-人工审核与编辑，字段任选：`{ "status": "approved" | "rejected" | "pending_review", "notes": "意见", "name": "新名称", "tags": ["第一关"] }`（标签最多 10 个、每个 ≤ 20 字，空数组清除）。返回更新后的素材。
+人工审核与编辑，字段任选：`{ "status": "approved" | "rejected" | "pending_review", "notes": "意见", "name": "新名称", "tags": ["第一关"], "nineSlice": { "left": 24, "top": 24, "right": 24, "bottom": 24 } }`（标签最多 10 个、每个 ≤ 20 字，空数组清除）。`nineSlice` 只用于 UI 素材：九宫格边距，单位为原图像素，左右之和 / 上下之和需小于图片宽 / 高，`null` 清除；通过后处理生成的新版本会沿用边距。返回更新后的素材。
 
 ### `DELETE /api/projects/:id/assets/:assetId`
 
@@ -249,7 +266,19 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 
 ### `POST /api/projects/:id/assets/batch`
 
-`{ "action": "approve" | "reject" | "pending" | "delete" | "restore" | "purge", "ids": ["ast_…"] }`，返回 `{ affected, project }`。`delete` 移到回收站，`restore` 从回收站恢复，`purge` 彻底删除（素材库或回收站中的都可以）；`"tag"` / `"untag"` 需额外带 `"tags": ["…"]`，为所选素材添加或移除标签。
+`{ "action": "approve" | "reject" | "pending" | "delete" | "restore" | "purge", "ids": ["ast_…"] }`，返回 `{ affected, project }`。`delete` 移到回收站，`restore` 从回收站恢复，`purge` 彻底删除（素材库或回收站中的都可以）；`"tag"` / `"untag"` 需额外带 `"tags": ["…"]`，为所选素材添加或移除标签；`"rename"` 需带 `"prefix": "coin_"`（可选 `"start": 1`），按 `ids` 的顺序改名为 `coin_01`、`coin_02`…（位数随最大序号补零）。
+
+### `POST /api/projects/:id/assets/revert`
+
+撤销一次批量修改：`{ "items": [{ "id": "ast_…", "status": "approved", "reviewer": "user", "tags": ["…"], "name": "…" }] }`，把每个素材的审核状态、审核人、标签与名称恢复成给定的值（前端在批量操作前记下原值），返回 `{ affected, project }`。已不在素材库里的 id 会被跳过；最多 1000 个。撤销删除用 `batch` 的 `restore`。
+
+### `POST /api/projects/:id/assets/batch-process`
+
+批量后处理（最多 30 个）：`{ "op": "outline", "ids": ["ast_…"], "width": 2, "color": "#1a1020" }`；`op` 为 `outline`（加描边，生成新版本）、`cutout`（去背景，原地，可带 `tolerance`）或 `snap`（吸附色板，生成新版本，可带 `dither`）。不适用的素材（如背景、瓦片、不透明素材描边）跳过并给出原因。返回 `{ done: [{ id, result }], skipped: [{ id, reason }], project }`，`result` 为新版本或处理后素材的 id。
+
+### `POST /api/projects/:id/cleanup-versions`
+
+清理旧版本：把「已有通过的新版本」（沿 `parentId` 任意层）的旧版本移到回收站，可恢复。新版本都还在待审核或已驳回时旧版本保留；换色变体不算版本。`?dryRun=1` 只返回将被清理的 `ids` 不做改动。返回 `{ ids, affected, project }`。
 
 ### `POST /api/projects/:id/trash/empty`
 
@@ -257,15 +286,27 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 
 ### `POST /api/projects/:id/assets/:assetId/slice`
 
-精灵表切帧：`{ "frames": 6, "fps": 10 }`（帧数省略时自动检测）。返回更新后的素材（含 `frames`、`gif`）。
+精灵表切帧 / 改帧率：`{ "frames": 6, "fps": 10 }`（帧数省略时自动检测；`fps` 1-30，省略时沿用当前帧率）。GIF 预览按新帧率重做，之后的 Godot / Unity / Phaser 导出都用这个帧率。返回更新后的素材（含 `frames`、`gif`、`fps`）。
 
 ### `POST /api/projects/:id/assets/:assetId/cutout`
 
 去除背景：`{ "tolerance": 28 }`（1-120）；`{ "restore": true }` 恢复原图。
 
+### `GET /api/projects/:id/duplicates`
+
+整个项目里几乎一样的素材（差异 ≤ 4）分组：`{ "groups": [["ast_保留", "ast_重复", …]] }`。只看当前素材（已有新版本的旧版本不算），同一素材的版本与变体不会被配成一组；每组第一个是建议保留的（已通过优先，其次 Agent 评分高、更早创建），成员多的组在前。
+
+### `GET /api/projects/:id/assets/:assetId/similar`
+
+看起来几乎一样的素材（感知哈希 dHash，相差不超过 10 位），最接近的在前：`{ "items": [{ "id": "ast_…", "distance": 3, "related": false }] }`。`related` 表示它是同一素材的版本或换色变体（本来就该像）；精灵表按第一帧比较。最多 12 个。
+
 ### `GET /api/projects/:id/assets/:assetId/seams`
 
 瓦片接缝检测：`{ horizontalDiff, verticalDiff, baseline, horizontalOk, verticalOk, seamless, … }`。
+
+### `GET /api/projects/:id/assets/:assetId/nine-slice`
+
+UI 素材的九宫格建议边距：`{ "suggestion": { "left", "top", "right", "bottom" } | null }`。在每个方向上找出相邻行 / 列几乎一致、可以拉伸而看不出变化的区域（优先经过中心的那段），横竖任一方向找不到时为 `null`。只是建议，保存仍用 `PATCH`。
 
 ### `GET /api/projects/:id/assets/:assetId/tiled.png`
 
@@ -283,6 +324,30 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 
 色板一致性：`?threshold=20`（ΔE）。返回 `{ coverage, meanDeltaE, usage, offPalette, pixels, threshold }`。
 
+### `GET /api/projects/:id/consistency`
+
+一致性总览：每个当前素材（不含已被新版本取代的、换色变体和回收站里的）按当前风格色板重新测量，再与项目自己的中位数比较——色板内像素低于中位数、平均色差高于中位数、Agent 一致性评分低于 7 都会增加偏离度。返回 `{ medianCoverage, medianDeltaE, items: [{ id, drift, reasons, coverage, meanDeltaE }] }`，按 `drift` 从大到小排列，`reasons` 是可直接作为重画意见的中文说明。`?tag=第一关` 只看带该标签的素材，中位数也只在这组里算（看某个角色或关卡内部是否协调）。没有色板时返回 400。
+
+### `GET /api/projects/:id/consistency.csv`
+
+一致性总览导出为 CSV（UTF-8 带 BOM，Excel 可直接打开）：排名、素材 id、名称、类型、状态、色板内占比、平均色差、偏离度、原因；`?tag=` 同上。以 `=`、`+`、`-`、`@` 开头的单元格前加 `'`，防止被表格软件当作公式执行。
+
+### `GET /api/projects/:id/assets-by-color`
+
+按颜色找素材：`?hex=%23d84848&threshold=20&min=0.02`。在当前素材（不含被取代的旧版本）里，统计可见像素中与该颜色色差（ΔE）不超过 `threshold`（5-60，默认 20）的占比，返回占比 ≥ `min`（默认 2%）的素材：`{ hex, threshold, items: [{ id, share }] }`，按占比从高到低。
+
+### `GET /api/projects/:id/assets/:assetId/colors`
+
+素材的主要颜色（可见像素，相近色合并）：`{ "colors": [{ "hex": "#7848d8", "share": 0.42 }, …] }`，最多 8 个，用来挑换色的源颜色。
+
+### `POST /api/projects/:id/assets/:assetId/recolor`
+
+换色变体，生成一个新素材（待审核，`variantOf` 指向原素材，不算新版本）：`{ "swaps": [{ "from": "#7848d8", "to": "#d84848" }], "threshold": 20, "name": "精英史莱姆" }`。与某个 `from` 色差（ΔE）不超过 `threshold`（5-60，默认 20）的像素按 Lab 空间里同样的偏移改色，明暗层次保留；其他像素不变。最多 8 组；`name` 默认「原名（变体）」。精灵表重新切帧，标签与九宫格沿用。返回新素材。
+
+### `POST /api/projects/:id/assets/:assetId/outline`
+
+加外描边，生成新版本（待审核）：`{ "width": 2, "color": "#1a1020" }`。`width` 1-16 像素（默认 2）；`color` 默认取风格色板里最深的颜色。像素风用方形笔刷保持边角清晰，其他风格用圆形笔刷；图片尺寸不变，贴边的描边会被裁掉。精灵表重新切帧，九宫格边距与标签沿用。背景、瓦片和没有透明背景的素材返回 400。返回新素材。
+
 ### `POST /api/projects/:id/assets/:assetId/snap-palette`
 
 把每个像素换成最接近的风格色板颜色（Lab 色差），生成新版本：`{ "dither": "none" | "ordered" }`（有序抖动保留渐变感）。返回 `{ asset, before, after }`，后两者为吸附前后的色板检测结果。
@@ -299,17 +364,22 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 
 ### `GET /api/projects/:id/export.zip`
 
-按类型分目录的素材包，附 `manifest.json`、`style-guide.json`、参考图。精灵表带切帧、GIF 与 Godot 4 `.tres`。
+按类型分目录的素材包，附 `manifest.json`、`style-guide.json`、参考图。精灵表带切帧、GIF 与 Godot 4 `.tres`（SpriteFrames）；设置了九宫格的 UI 素材带 Godot 4 `StyleBoxTexture` `.tres`，`manifest.json` 里记录 `nineSlice`（相对原图，`?sizes=1` 的缩放版本需按比例换算）。
 
 - 默认只含已通过素材；`?status=all` 全部；`?ids=ast_a,ast_b` 指定素材（不限状态）；`?tag=第一关` 只含带该标签的素材（可与前两者组合）
 - `?sizes=1` 追加各类型常用尺寸
+- `?names=ascii` 文件名只用 ASCII：本身就是英文安全名的保持不变，其余按类型编号为 `item_icon_01`、`item_icon_02`…（`manifest.json` 仍记录原名），引擎、版本库与跨平台路径更省心；图集同样支持
 - `?godot=game/art` 指定 `.tres` 里的 `res://` 目录（默认 `assets`）
+- 同一标签下有 2 张以上精灵表时（如动作套装），附 `_animations/<标签>.tres`：一个 Godot 4 SpriteFrames，每张精灵表是一个命名动画（动作套装的表用动作名，如「待机」，`?names=ascii` 时为 `idle`；待机 / 行走 / 奔跑循环，攻击 / 受击 / 跳跃 / 倒下只播一次），挂到 AnimatedSprite2D 上按名字 `play()`；`manifest.json` 的 `animationSets` 列出各动画
+- 含瓦片时附 Godot 4 TileSet：所有瓦片缩放到同一尺寸拼成 `tile/tileset.png`（每行 8 块），`tile/tileset.tres` 直接拖到 TileMapLayer 上即可绘制；`?tile=32` 指定每块像素（8-256，默认 32）；`manifest.json` 的 `tileset` 记录每块瓦片在图集里的坐标
+- `?unity=1` 每张图旁附 Unity `TextureImporter` `.meta`：按 Sprite 导入；精灵表为 Multiple 并按帧切片；UI 九宫格写入 `spriteBorder`；角色 / 敌人 / 物件 / 帧的轴心在底部中心；瓦片为 Repeat；像素风为 Point 过滤、不压缩。GUID 由项目、素材 id 与用途决定，重复导出保持不变，Unity 里的引用不会断；精灵表另附循环播放的 AnimationClip（`.anim` + `.meta`，按帧率切换 SpriteRenderer 的 Sprite，manifest 里记为 `files.unity`）
 
 ### `GET /api/projects/:id/export-atlas.zip`
 
-图集：`atlas.png` + `atlas.json`（TexturePacker JSON Hash，Phaser / PixiJS 可直接加载）、`animations.json`（Phaser 3 动画）。背景图不进图集。
+图集：`atlas.png` + `atlas.json`（TexturePacker JSON Hash，Phaser / PixiJS 可直接加载）、`animations.json`（Phaser 3 动画）。背景图不进图集。设置了九宫格的 UI 素材不裁透明边，帧里带按缩放换算的 `scale9Borders`（Phaser 3.60+ 的 `this.add.nineslice` 直接读取）。
 
 - `?max=256` 单个精灵最长边（16-1024），`?size=2048` 图集页尺寸（512 / 1024 / 2048 / 4096），放不下时分多页 `atlas_0`、`atlas_1`…
+- `?cocos=1` 每页另附 cocos2d `.plist`（格式 3）：Cocos Creator 把 `.plist` 与同名 PNG 一起放进 assets 即导入为 SpriteAtlas，cocos2d-x 用 `SpriteFrameCache::addSpriteFramesWithFile` 加载；九宫格边距需在编辑器里设置
 - `?status=all`、`?ids=`、`?tag=` 同上
 
 ## 用量
@@ -324,6 +394,12 @@ curl -N http://localhost:5173/api/jobs/job_xxx/events
 ```
 
 `cost` 中为 `null` 的部分表示缺少单价（如未配置 `IMAGE_PRICE_OPENAI`），未计入合计。运行状态：`running`、`ok`、`error`、`stopped`、`interrupted`。
+普通需求的运行带 `rerun: { request, assetTypes }`（原始需求与所选类型，界面里「再次运行」用它填回需求面板）；重画、动作套装与直接重生成没有。
+
+### `GET /api/projects/:id/stats`
+
+项目进度：`{ current, byStatus: { approved, pending_review, rejected }, approvalRate, meanScore, byType: [{ type, current, approved }], variants, superseded, trashed, costPerApproved }`。「当前素材」不含已被新版本取代的旧版本与回收站；`approvalRate` = 通过 /（通过 + 驳回）；`meanScore` 为 Agent 一致性评分均值；`costPerApproved` = 累计估算费用 / 已通过素材数。尚无数据时相应字段为 `null`。
+
 
 Seedream 的调用次数见 `images.byProvider.seedream`，可用 `IMAGE_PRICE_SEEDREAM` 设置美元/张的估算单价；留空时仍统计调用次数，图像费用为未知，不计入美元预算。方舟人民币单价需先换算，不应直接填写。实际费用以服务商账单为准。
 

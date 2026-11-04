@@ -109,7 +109,7 @@ describe("GPT Responses agent in both billing modes", () => {
     const tool = (first.tools as { type: string; name: string; tools: { name: string; strict: boolean }[] }[])[0];
     assert.equal(tool.type, "namespace");
     assert.equal(tool.name, "game_assets");
-    assert.equal(tool.tools.length, 7);
+    assert.equal(tool.tools.length, 11);
     assert.ok(tool.tools.every((t) => t.strict === false));
     assert.match(JSON.stringify(first.input), /input_image/);
     assert.deepEqual(requests[1].body.input[1], reasoning);

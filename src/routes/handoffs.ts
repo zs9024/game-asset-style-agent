@@ -2,6 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { jobs, runningJobFor, startJob } from "../agent/index.js";
 import { HandoffError, cancelHandoff, handoffIsLive, handoffZip, listHandoffs, readHandoff, uploadHandoff } from "../handoff/service.js";
+import { msg } from "../i18n.js";
 import { loadProject } from "../store/index.js";
 import { attachment, pid } from "./util.js";
 
@@ -20,7 +21,7 @@ handoffsRouter.get("/api/projects/:id/handoffs/:taskId/package.zip", async (req,
 });
 handoffsRouter.post("/api/projects/:id/handoffs/:taskId/result", upload.single("image"), async (req, res) => {
   await loadProject(pid(req));
-  if (!req.file) return void res.status(400).json({ error: "请上传 image 文件（PNG/JPEG/WebP，最大 20 MB）" });
+  if (!req.file) return void res.status(400).json({ error: msg("err.uploadImage") });
   res.json(await uploadHandoff(pid(req), String(req.params.taskId), req.file.buffer));
 });
 handoffsRouter.post("/api/projects/:id/handoffs/:taskId/cancel", async (req, res) => {
@@ -33,16 +34,16 @@ handoffsRouter.post("/api/projects/:id/handoffs/:taskId/resume", async (req, res
   const projectId = pid(req);
   await loadProject(projectId);
   const record = await readHandoff(projectId, String(req.params.taskId));
-  if (handoffIsLive(projectId, record.id)) throw new HandoffError("原任务仍在等待，请上传图片后等待它继续");
-  if (record.status !== "submitted" && record.status !== "imported") throw new HandoffError("请先上传接力结果图片");
+  if (handoffIsLive(projectId, record.id)) throw new HandoffError(msg("err.handoffStillWaiting"));
+  if (record.status !== "submitted" && record.status !== "imported") throw new HandoffError(msg("err.handoffUploadFirst"));
   const running = runningJobFor(projectId);
-  if (running) return void res.status(409).json({ error: "项目已有任务在运行", jobId: running.id });
-  const job = startJob({ projectId, request: `审核人工接力：${record.name}`, assetTypes: [], providerId: "mock",
+  if (running) return void res.status(409).json({ error: msg("err.projectBusy"), jobId: running.id });
+  const job = startJob({ projectId, request: msg("run.handoffReview", { name: record.name }), assetTypes: [], providerId: "mock",
     handoffResume: { taskId: record.id }, continueConversation: false, budget: { maxImages: 1 } });
   res.json({ jobId: job.id });
 });
 handoffsRouter.use((error: unknown, _req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
   if (error instanceof HandoffError) return void res.status(error.status).json({ error: error.message });
-  if (error instanceof multer.MulterError) return void res.status(400).json({ error: "上传失败：最多一张图片，单张不超过 20 MB" });
+  if (error instanceof multer.MulterError) return void res.status(400).json({ error: msg("err.uploadFailed") });
   next(error);
 });

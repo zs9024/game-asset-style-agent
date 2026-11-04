@@ -22,10 +22,16 @@
 - 🎯 **色板一致性检测**：在 Lab 色彩空间计算素材与风格色板的色差，给出色板内像素占比与主要色板外颜色；结果附在每次生成里供 Agent 审核，查看器也可查看
 - 🔁 **自审闭环**：每张图生成后 Agent 会对照参考图打一致性分（1–10），结果附带色板 / 瓦片接缝 / 帧抖动自动检测；接缝、抖动、残留背景这类问题直接用后处理工具修复（不花图像费用），其他问题带着具体意见重画（每张最多 2 次）
 - 🧬 **跨素材一致性**：可把已通过的素材（如主角设定图）作为额外参考，画同一角色的动画帧 / 头像
-- 📦 **引擎可用的导出**：按类型分目录的 ZIP（含多尺寸、manifest、Godot 4 SpriteFrames `.tres`），以及图集 PNG + TexturePacker JSON（Phaser / PixiJS 可直接加载）和 Phaser 动画定义
+- 🏃 **动作套装**：选中角色或敌人，一键生成待机 / 行走 / 攻击 / 受击等精灵表，都以它为一致性参考并带合适的帧率
+- 🖼️ **场景拼版**：把已通过的素材摆到背景（场景图、瓦片平铺或纯色）上，拖动、缩放、翻转，检查整套素材放在一起是否协调，可下载 PNG
+- 📘 **风格说明书**：一键生成单页 HTML（色板、画风规则、参考图与备注、已通过素材样例），可直接发给外包美术或打印
+- 📏 **项目约定**：写下团队自己的美术规范（如「图标统一 2px 描边」），每次运行都发给 Claude，也写进风格说明书
+- 🎨 **内置风格预设**：新建项目可选像素风、卡通平涂、手绘水彩，不上传参考图也能先生成试试，之后随时编辑或上传参考图重新提炼
+- 🌐 **中 / 英界面**：页头一键切换并记住选择，首次打开跟随浏览器语言；素材备注、一致性原因、运行日志与错误信息等服务端文案也随之切换
+- 📦 **引擎可用的导出**：按类型分目录的 ZIP（含多尺寸、manifest、Godot 4 SpriteFrames / UI 九宫格 StyleBoxTexture / 瓦片 TileSet `.tres`，同一角色的多张精灵表合成一个多动画 SpriteFrames，可选 Unity `.meta` 与精灵表 AnimationClip：精灵表切片、九宫格边框、像素风过滤），以及图集 PNG + TexturePacker JSON（Phaser / PixiJS 可直接加载）、Phaser 动画定义，可选 Cocos Creator `.plist` 图集；内置 Unity / Godot / Phaser / Cocos 导出预设，导出前列出会被跳过的内容
 - 💰 **成本可控**：实时用量与费用估算；单次运行可设图像次数 / 费用上限，达到后 Agent 停止出图并收尾；图像接口限流自动退避重试
-- 🛠️ **素材工作台**：精灵表切帧与防抖对齐、瓦片一键无缝化、去背景、游戏尺寸缩放、版本对比（滑块 / 并排）、改 prompt 直接重生成（不经过 Agent）
-- 🗂️ **素材管理**：搜索与类型筛选、批量通过 / 驳回 / 按意见重画 / 导出、回收站（7 天可恢复）、风格指南历史与回滚、参考图备注、项目备份与恢复
+- 🛠️ **素材工作台**：精灵表切帧与防抖对齐、逐帧步进与洋葱皮、瓦片一键无缝化、UI 九宫格边距与拉伸预览、去背景、游戏尺寸缩放、1×–16× 缩放与像素网格、版本对比（滑块 / 并排）、相似素材、改 prompt 直接重生成（不经过 Agent）
+- 🗂️ **素材管理**：搜索语法（`#标签`、`type:`、`status:`、`-排除`，标签自动补全）、批量通过 / 驳回 / 按意见重画 / 描边 / 去背景 / 吸附色板 / 改名 / 导出且可一键撤销、重复素材分组清理、右键 / 长按菜单与全键盘操作、回收站（7 天可恢复）、风格指南历史与回滚、参考图备注、项目备份与恢复
 - ⚡ 并行生成、SSE 实时日志（含思考摘要）、可随时停止、刷新页面自动续接任务、后台完成提醒、查看器快捷键
 - 🔌 图像模型可插拔：OpenAI GPT Image 2.5 Flare / Sunburst（API）、Google Gemini Image、火山方舟 Doubao Seedream 5.0 Flash（最多 10 张参考图）、本地 Stable Diffusion WebUI、Codex 内置订阅生图、ChatGPT 人工接力、离线 Mock
 
@@ -241,7 +247,7 @@ src/
   app.ts                 createApp()：组装中间件与路由（测试可直接挂载）
   config.ts              环境变量配置
   domain/assetTypes.ts   素材类型定义
-  routes/                config · projects · refs · assets · export · jobs（运行/SSE）· usage
+  routes/                config · projects · refs · assets（素材库）· postprocess（后处理）· analysis（检测与预览）· export · jobs（运行/SSE）· usage
   ops/assetOps.ts        后处理（抠图、无缝化、帧对齐、切帧），HTTP 接口与 Agent 工具共用
   agent/                 Claude / DeepSeek / GPT 智能体
     tools.ts / schemas.ts  工具定义与 zod 输入校验
@@ -272,6 +278,10 @@ Agent 工具：
 | `align_sprite_frames` | 精灵表帧抖动时按锚点对齐各帧（不调用图像模型） |
 | `remove_background` | 换个容差重新抠背景（不调用图像模型） |
 | `snap_to_palette` | 平涂 / 像素风素材出现色板外颜色时，把颜色吸附到风格色板（不调用图像模型） |
+| `set_nine_slice` | 可拉伸的 UI（面板、按钮、条）自动检测或手动给出九宫格边距并保存，返回拉伸预览供检查（不调用图像模型） |
+| `add_outline` | 风格要求描边而素材缺描边或粗细不匀时，统一加外描边（颜色默认取色板最深色，不调用图像模型） |
+| `recolor_variant` | 换色变体：精英怪、元素版、套装配色、稀有度等，保留明暗层次生成新素材（不调用图像模型） |
+| `check_consistency` | 收尾前自查：按风格色板测量全部素材，列出偏离最大的及原因，Agent 再决定修复或重画（不调用图像模型） |
 
 Claude 默认模型 `claude-opus-5-5`（adaptive thinking，effort 可通过 `CLAUDE_EFFORT` 调整），已开启服务端 refusal fallback（`fallbacks: "default"`）和 prompt caching。DeepSeek 通过兼容 Messages API 复用同一套工具、视觉审核、流式日志与预算限制，仅发送其支持的参数。GPT 使用官方 OpenAI SDK 的 Responses API，工具按 namespace 分组，保留加密推理上下文，支持 API key 与 ChatGPT 订阅两种鉴权。
 
@@ -284,6 +294,10 @@ Claude 默认模型 `claude-opus-5-5`（adaptive thinking，effort 可通过 `CL
 ## HTTP API
 
 界面能做的事都可以用接口完成（批量生成、导出、审核等），见 [docs/api.md](docs/api.md)，含一个从建项目到下载图集的脚本示例。设置了 `ACCESS_TOKEN` 时用 `Authorization: Bearer <令牌>` 调用。
+
+## 更新记录
+
+各版本的改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 

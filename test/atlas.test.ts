@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import sharp from "sharp";
 import { buildAtlas, packRects, prepareSprite } from "../src/export/atlas.js";
-import { spriteFramesTres } from "../src/export/godot.js";
+import { spriteFramesMultiTres, spriteFramesTres, tileSetTres } from "../src/export/godot.js";
 import { pixel, solidPng } from "./helpers.js";
 
 const overlap = (a: { x: number; y: number; w: number; h: number }, b: typeof a) =>
@@ -100,5 +100,31 @@ describe("Godot SpriteFrames", () => {
     assert.match(tres, /"speed": 12.0/);
     assert.match(tres, /"loop": true/);
     assert.match(tres, /"name": &"default"/);
+  });
+});
+
+describe("Godot TileSet", () => {
+  it("indexes every tile of the grid texture in one atlas source", () => {
+    const tres = tileSetTres("res://assets/tile/tileset.png", { tileSize: 16, count: 10, columns: 8 });
+    assert.match(tres, /^\[gd_resource type="TileSet" load_steps=3 format=3\]/);
+    assert.match(tres, /texture_region_size = Vector2i\(16, 16\)/);
+    assert.match(tres, /tile_size = Vector2i\(16, 16\)/);
+    assert.deepEqual([...tres.matchAll(/^(\d+):(\d+)\/0 = 0$/gm)].map((m) => `${m[1]}:${m[2]}`), [
+      "0:0", "1:0", "2:0", "3:0", "4:0", "5:0", "6:0", "7:0", "0:1", "1:1",
+    ]);
+  });
+});
+
+describe("Godot SpriteFrames with several animations", () => {
+  it("lists each animation with its own frames, speed and loop flag", () => {
+    const tres = spriteFramesMultiTres([
+      { name: "idle", paths: ["res://a/0.png", "res://a/1.png"], fps: 6, loop: true },
+      { name: "hurt", paths: ["res://b/0.png"], fps: 10, loop: false },
+    ]);
+    assert.match(tres, /load_steps=4 format=3/);
+    assert.equal(tres.match(/\[ext_resource /g)?.length, 3);
+    const anims = [...tres.matchAll(/"loop": (\w+),\n"name": &"(\w+)",\n"speed": ([\d.]+)/g)].map((m) => m.slice(1).join(" "));
+    assert.deepEqual(anims, ["true idle 6.0", "false hurt 10.0"]);
+    assert.match(tres, /"texture": ExtResource\("3"\)/);
   });
 });

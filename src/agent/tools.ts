@@ -69,6 +69,10 @@ export const tools: Anthropic.Beta.BetaTool[] = [
           type: "integer",
           description: "sprite_sheet only: number of animation frames in the single horizontal row (2-16). The sheet is sliced into frames and a GIF preview automatically.",
         },
+        fps: {
+          type: "integer",
+          description: "sprite_sheet only: playback speed in frames per second (1-30, default 8), used by the preview and engine exports. Match the motion: idle ~6, walk ~8-10, run / attack ~12.",
+        },
         tags: {
           type: "array",
           items: { type: "string" },
@@ -144,6 +148,67 @@ export const tools: Anthropic.Beta.BetaTool[] = [
         dither: { type: "string", enum: ["none", "ordered"], description: "none: hard snap (pixel art, flat colour). ordered: Bayer dithering keeps some sense of gradients." },
       },
       required: ["asset_id"],
+    },
+  },
+  {
+    name: "set_nine_slice",
+    description:
+      "Save 9-slice margins on a ui asset that will be stretched in-game (panels, dialog frames, buttons, bars), so exports carry them for Godot and Phaser. Omit the margins to detect the stretchable centre automatically; give them (pixels of the full image) to set them yourself. Saves in place (no new version, no cost) and returns the asset stretched wider and taller: check that corners and ornaments stay intact and only flat areas stretch.",
+    input_schema: {
+      type: "object",
+      properties: {
+        asset_id: { type: "string" },
+        left: { type: "integer", description: "Pixels from the left edge that never stretch (corner width)." },
+        top: { type: "integer" },
+        right: { type: "integer" },
+        bottom: { type: "integer" },
+      },
+      required: ["asset_id"],
+    },
+  },
+  {
+    name: "add_outline",
+    description:
+      "Add a uniform outer outline around a transparent-background asset (no image-model call, no cost). Use it when the style guide calls for outlines and an asset's outline is missing, too thin or uneven, so every sprite in the set reads the same against the game background. Creates a new version (pending review); review it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        asset_id: { type: "string" },
+        width: { type: "integer", description: "Outline width in pixels of the full image, 1-16 (default 2). Scale with the image: ~1px per 64px of sprite for pixel art." },
+        color: { type: "string", description: "#rrggbb; defaults to the darkest style-palette colour, usually the outline colour." },
+      },
+      required: ["asset_id"],
+    },
+  },
+  {
+    name: "recolor_variant",
+    description:
+      "Make a colour-swap variant of an asset as a new asset (no image-model call, no cost): elite or element versions of an enemy, other outfit colours, rarity tiers of an item. Pixels near each `from` colour shift to the `to` colour with their shading kept. Use the asset's main colours (from the palette check, or this tool's result) as `from`. Returns the variant's asset_id and image; review it like any asset.",
+    input_schema: {
+      type: "object",
+      properties: {
+        asset_id: { type: "string" },
+        swaps: {
+          type: "array",
+          items: { type: "object", properties: { from: { type: "string", description: "#rrggbb present in the asset" }, to: { type: "string", description: "#rrggbb" } }, required: ["from", "to"] },
+          description: "1-8 colour swaps.",
+        },
+        name: { type: "string", description: "Name of the variant in the user's language, e.g. \"精英史莱姆\"." },
+        threshold: { type: "number", description: "How far (ΔE, 5-60, default 20) a pixel may be from `from` and still change. Raise it if shades of the colour are left behind." },
+      },
+      required: ["asset_id", "swaps"],
+    },
+  },
+  {
+    name: "check_consistency",
+    description:
+      "Measure every current asset in the project against the style palette and list the ones that drift furthest from the rest of the set, with the reasons (low on-palette share, large colour distance, low review score). Free, no image calls. Call it once before your final summary, after generating several assets: fix or regenerate assets from this run that it flags, and mention older ones in the summary.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", description: "How many of the most drifted assets to list (1-20, default 8)." },
+        tag: { type: "string", description: "Only check assets with this tag (e.g. one character or level), compared with each other." },
+      },
     },
   },
 ];

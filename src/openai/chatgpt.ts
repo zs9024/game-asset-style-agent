@@ -6,6 +6,7 @@ import path from "node:path";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { z } from "zod";
 import { config } from "../config.js";
+import { msg } from "../i18n.js";
 import { createKeyedQueue } from "../store/fs.js";
 
 const ISSUER = "https://auth.openai.com";
@@ -44,7 +45,7 @@ export class ChatGPTAuth {
       return storeSchema.parse(JSON.parse(await fs.readFile(this.file(), "utf8")));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return { hostId: `urn:uuid:${crypto.randomUUID()}`, accounts: [] };
-      throw new Error("ChatGPT 登录文件无法读取，请检查 DATA_DIR/auth/chatgpt.json");
+      throw new Error(msg("err.chatgptLoginFile"));
     }
   }
   private async save(store: AuthStore) {
@@ -60,10 +61,10 @@ export class ChatGPTAuth {
   private async discovery() {
     if (!this.metadata) {
       const res = await this.fetch(`${ISSUER}/.well-known/openid-configuration`);
-      if (!res.ok) throw new Error(`无法获取 OpenAI 登录配置（HTTP ${res.status}）`);
+      if (!res.ok) throw new Error(msg("err.chatgptConfigFetch", { status: res.status }));
       const metadata = await res.json() as Discovery;
       if (metadata.issuer !== ISSUER || [metadata.authorization_endpoint, metadata.token_endpoint, metadata.jwks_uri, metadata.revocation_endpoint]
-        .some((url) => !url || new URL(url).origin !== ISSUER)) throw new Error("OpenAI 登录配置无效");
+        .some((url) => !url || new URL(url).origin !== ISSUER)) throw new Error(msg("err.chatgptConfigInvalid"));
       this.metadata = metadata;
     }
     return this.metadata;
@@ -74,10 +75,10 @@ export class ChatGPTAuth {
       method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ ...params, resource: RESOURCE }),
     });
-    if (!res.ok) throw new Error(`ChatGPT 授权或续期失败（HTTP ${res.status}），请重新登录`);
+    if (!res.ok) throw new Error(msg("err.chatgptAuthFailed", { status: res.status }));
     const tokens = await res.json() as Tokens;
     if (!tokens.access_token || tokens.token_type?.toLowerCase() !== "bearer" || !Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0) {
-      throw new Error("ChatGPT 登录响应无效");
+      throw new Error(msg("err.chatgptResponseInvalid"));
     }
     return tokens;
   }
@@ -97,10 +98,10 @@ export class ChatGPTAuth {
 
   async startLogin(accountId?: string, includeIdTokenHint = true) {
     return this.queue(this.file(), async () => {
-      if (this.pending?.status === "pending") throw new Error("ChatGPT 登录正在进行，请完成或等待本次登录过期");
+      if (this.pending?.status === "pending") throw new Error(msg("err.chatgptPending"));
       const store = await this.load();
       const account = accountId ? store.accounts.find((a) => a.clientId === accountId) : undefined;
-      if (accountId && !account) throw new Error("ChatGPT 账号不存在");
+      if (accountId && !account) throw new Error(msg("err.chatgptAccountMissing"));
       await this.save(store); // Persist the host identity before first registration.
       const metadata = await this.discovery();
       const server = http.createServer((req, res) => void this.callback(req, res));
@@ -110,7 +111,7 @@ export class ChatGPTAuth {
         id: crypto.randomUUID(), state: crypto.randomBytes(32).toString("base64url"), nonce: crypto.randomBytes(32).toString("base64url"),
         verifier: crypto.randomBytes(64).toString("base64url"), redirectUri: `http://127.0.0.1:${(server.address() as AddressInfo).port}/auth/callback`,
         account, status: "pending", server, used: false,
-        timer: setTimeout(() => this.finish("error", "ChatGPT 登录已过期，请重新开始"), 10 * 60_000).unref(),
+        timer: setTimeout(() => this.finish("error", msg("err.chatgptAttemptExpired")), 10 * 60_000).unref(),
       };
       this.pending = attempt;
       const url = new URL(metadata.authorization_endpoint);
@@ -141,28 +142,28 @@ export class ChatGPTAuth {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (req.method !== "GET" || url.pathname !== "/auth/callback") { res.writeHead(404); res.end("Not found"); return; }
     if (!attempt || attempt.status !== "pending" || attempt.used || url.searchParams.get("state") !== attempt.state) {
-      res.writeHead(400); res.end("登录状态无效，请从应用重新发起登录。"); return;
+      res.writeHead(400); res.end(msg("err.chatgptStateInvalid")); return;
     }
     attempt.used = true; // Consume exactly once before exchanging a code.
     try {
-      if (url.searchParams.has("error")) throw new Error("ChatGPT 登录未获授权，请返回应用重试");
+      if (url.searchParams.has("error")) throw new Error(msg("err.chatgptNotAuthorized"));
       const clientId = url.searchParams.get("client_id") ?? attempt.account?.clientId;
-      if (!clientId || !/^oaiapp_[\w-]+$/.test(clientId) || (attempt.account && clientId !== attempt.account.clientId)) throw new Error("ChatGPT 客户端注册无效");
+      if (!clientId || !/^oaiapp_[\w-]+$/.test(clientId) || (attempt.account && clientId !== attempt.account.clientId)) throw new Error(msg("err.chatgptClientInvalid"));
       const code = url.searchParams.get("code");
-      if (!code) throw new Error("ChatGPT 登录未返回授权码");
+      if (!code) throw new Error(msg("err.chatgptNoCode"));
       const tokens = await this.exchange({ grant_type: "authorization_code", client_id: clientId, code, code_verifier: attempt.verifier, redirect_uri: attempt.redirectUri });
-      if (!tokens.id_token) throw new Error("ChatGPT 登录未返回身份令牌");
+      if (!tokens.id_token) throw new Error(msg("err.chatgptNoIdToken"));
       const metadata = await this.discovery();
       const jwksResponse = await this.fetch(metadata.jwks_uri);
-      if (!jwksResponse.ok) throw new Error("无法验证 ChatGPT 身份");
+      if (!jwksResponse.ok) throw new Error(msg("err.chatgptVerify"));
       const keys = createLocalJWKSet(await jwksResponse.json());
       const { payload } = await jwtVerify(tokens.id_token, keys, { issuer: metadata.issuer, audience: clientId, algorithms: ["RS256", "ES256"], requiredClaims: ["sub", "exp", "iat", "nonce"] });
-      if (payload.nonce !== attempt.nonce || !payload.sub || (attempt.account && payload.sub !== attempt.account.subject)) throw new Error("ChatGPT 登录身份不匹配");
+      if (payload.nonce !== attempt.nonce || !payload.sub || (attempt.account && payload.sub !== attempt.account.subject)) throw new Error(msg("err.chatgptIdentityMismatch"));
       await this.queue(this.file(), async () => {
-        if (this.pending !== attempt || attempt.status !== "pending") throw new Error("ChatGPT 登录已取消");
+        if (this.pending !== attempt || attempt.status !== "pending") throw new Error(msg("err.chatgptCancelled"));
         const store = await this.load();
         const previous = store.accounts.find((a) => a.clientId === clientId);
-        if (previous && previous.subject !== payload.sub) throw new Error("ChatGPT 登录身份不匹配");
+        if (previous && previous.subject !== payload.sub) throw new Error(msg("err.chatgptIdentityMismatch"));
         const account: Account = { clientId, subject: payload.sub!, email: typeof payload.email === "string" ? payload.email : undefined,
           accessToken: tokens.access_token, refreshToken: tokens.refresh_token, idToken: tokens.id_token,
           expiresAt: Date.now() + tokens.expires_in * 1000, scopes: (tokens.scope ?? "").split(/\s+/).filter(Boolean) };
@@ -171,19 +172,19 @@ export class ChatGPTAuth {
         await this.save(store);
       });
       this.finish("complete");
-      res.end("ChatGPT 登录完成。请关闭此页面并返回 Game Asset Agent。");
+      res.end(msg("chatgpt.pageDone"));
     } catch {
       // Do not reflect provider responses, codes or JWT payloads in browser/API errors.
-      this.finish("error", "ChatGPT 登录失败或身份校验未通过，请重新登录");
-      res.writeHead(400); res.end("ChatGPT 登录失败，请返回应用重新登录。");
+      this.finish("error", msg("err.chatgptLoginFailed"));
+      res.writeHead(400); res.end(msg("chatgpt.pageFailed"));
     }
   }
 
   async selectAccount(accountId: string) {
     return this.queue(this.file(), async () => {
       const store = await this.load();
-      if (!store.accounts.some((a) => a.clientId === accountId)) throw new Error("ChatGPT 账号不存在");
-      if (this.pending?.status === "pending") this.finish("error", "已切换账号，本次登录已取消");
+      if (!store.accounts.some((a) => a.clientId === accountId)) throw new Error(msg("err.chatgptAccountMissing"));
+      if (this.pending?.status === "pending") this.finish("error", msg("err.chatgptSwitchCancelled"));
       store.activeAccountId = accountId;
       await this.save(store);
     });
@@ -193,19 +194,19 @@ export class ChatGPTAuth {
     return this.queue(this.file(), async () => {
       const store = await this.load();
       const account = store.accounts.find((a) => a.clientId === store.activeAccountId);
-      if (!account?.accessToken) throw new Error("请先在页面中 Continue with ChatGPT 完成订阅登录");
-      if (expectedAccountId && account.clientId !== expectedAccountId) throw new Error("ChatGPT 账号已切换，请重新开始运行");
-      if (!account.scopes.includes(DIRECT_SCOPE)) throw new Error("尚未授权使用 ChatGPT 订阅额度，请重新登录并授权");
+      if (!account?.accessToken) throw new Error(msg("err.chatgptLoginFirst"));
+      if (expectedAccountId && account.clientId !== expectedAccountId) throw new Error(msg("err.chatgptAccountSwitched"));
+      if (!account.scopes.includes(DIRECT_SCOPE)) throw new Error(msg("err.chatgptScopeMissing"));
       if (!account.expiresAt || account.expiresAt <= Date.now() + 60_000) {
-        if (!account.refreshToken) throw new Error("ChatGPT 登录已过期，请重新登录");
+        if (!account.refreshToken) throw new Error(msg("err.chatgptExpired"));
         const tokens = await this.exchange({ grant_type: "refresh_token", client_id: account.clientId, refresh_token: account.refreshToken });
-        if (!tokens.refresh_token) throw new Error("ChatGPT 续期未返回新的刷新令牌，请重新登录");
+        if (!tokens.refresh_token) throw new Error(msg("err.chatgptNoRefresh"));
         account.accessToken = tokens.access_token;
         account.refreshToken = tokens.refresh_token;
         account.expiresAt = Date.now() + tokens.expires_in * 1000;
         if (tokens.scope !== undefined) account.scopes = tokens.scope.split(/\s+/).filter(Boolean);
         await this.save(store);
-        if (!account.scopes.includes(DIRECT_SCOPE)) throw new Error("ChatGPT 订阅授权已撤回，请重新登录");
+        if (!account.scopes.includes(DIRECT_SCOPE)) throw new Error(msg("err.chatgptScopeRevoked"));
       }
       return { accessToken: account.accessToken, accountId: account.clientId };
     });
@@ -214,9 +215,9 @@ export class ChatGPTAuth {
   async models() {
     const { accessToken } = await this.credential();
     const res = await this.fetch(`${RESOURCE}/models`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`无法获取 ChatGPT 可用模型（HTTP ${res.status}）`);
+    if (!res.ok) throw new Error(msg("err.chatgptModelsFetch", { status: res.status }));
     const result = await res.json() as { models?: { slug: string; display_name: string; visibility: string }[] };
-    if (!Array.isArray(result.models)) throw new Error("ChatGPT 模型列表响应无效");
+    if (!Array.isArray(result.models)) throw new Error(msg("err.chatgptModelsInvalid"));
     return result.models.filter((m) => m.visibility === "list").map((m) => ({ id: m.slug, name: m.display_name }));
   }
 
@@ -224,8 +225,8 @@ export class ChatGPTAuth {
     return this.queue(this.file(), async () => {
       const store = await this.load();
       const account = store.accounts.find((a) => a.clientId === accountId);
-      if (!account) throw new Error("ChatGPT 账号不存在");
-      if (this.pending?.status === "pending") this.finish("error", "已退出账号，本次登录已取消");
+      if (!account) throw new Error(msg("err.chatgptAccountMissing"));
+      if (this.pending?.status === "pending") this.finish("error", msg("err.chatgptLogoutCancelled"));
       let revoked = !account.refreshToken;
       if (account.refreshToken) {
         try {
@@ -244,12 +245,12 @@ export class ChatGPTAuth {
       delete account.accessToken; delete account.refreshToken; delete account.idToken; delete account.expiresAt;
       account.scopes = [];
       await this.save(store);
-      return { revoked, message: revoked ? "已退出 ChatGPT 登录" : "本地登录已清除；远程撤销未确认，请在 ChatGPT 设置中断开本应用" };
+      return { revoked, message: revoked ? msg("chatgpt.loggedOut") : msg("chatgpt.loggedOutLocal") };
     });
   }
 
   /** Called on shutdown/tests to close the local callback listener. */
-  close() { if (this.pending?.status === "pending") this.finish("error", "ChatGPT 登录已取消"); }
+  close() { if (this.pending?.status === "pending") this.finish("error", msg("err.chatgptCancelled")); }
 }
 
 export const chatGPTAuth = new ChatGPTAuth();

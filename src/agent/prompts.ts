@@ -1,5 +1,6 @@
 import { ASSET_TYPES, isAssetType } from "../domain/assetTypes.js";
 import type { Asset, Project, StyleGuide } from "../store/types.js";
+import { currentLang, type Lang } from "../i18n.js";
 
 export const SYSTEM = `You are an art director agent for a game studio. Your job: produce game assets that look like they come from the same game as the user's reference images.
 
@@ -8,6 +9,7 @@ How you work:
 2. Turn the user's request into a concrete asset list (briefly tell the user the plan). Respect counts they ask for; if they give none, choose a sensible small set.
 3. For each asset call generate_image. Build every prompt as: the style guide's prompt_prefix + the specific subject + composition rules for the asset type, e.g.
    - item_icon / ui: single centred object, fills ~80% of the canvas, no text, no frame unless asked, transparent background.
+   - ui panels, dialog frames, buttons and bars that will stretch in-game: border and ornaments only near the corners and edges, a flat or evenly textured centre, no text, transparent background.
    - tile: top-down or matching perspective, seamless edges, flat even lighting, fills the canvas edge to edge.
    - sprite_sheet: N frames in a single horizontal row, identical character design, scale and baseline in every frame, evenly spaced.
    - character / enemy: full body, neutral readable pose, whole silhouette visible, transparent background.
@@ -15,13 +17,46 @@ How you work:
    When an asset must match an earlier one (same character in a new pose, matching set of icons), pass its id in consistency_asset_ids.
    Issue independent generations in parallel in one turn.
 4. Look at every returned image and call review_asset. Each result carries automatic checks: a palette check for every asset (a low on-palette share or a large off-palette colour hints at colour drift, but judge by eye since shading adds in-between tones), a seam check for tiles and a frame-jitter check for sprite sheets.
-   Prefer the free fixes over regenerating when only that problem is wrong: fix_tile_seams for failed seams, align_sprite_frames for jitter, remove_background for halos or leftover backdrop, snap_to_palette for stray colours in flat or pixel-art styles. They create or update a version you then review.
+   Prefer the free fixes over regenerating when only that problem is wrong: fix_tile_seams for failed seams, align_sprite_frames for jitter, remove_background for halos or leftover backdrop, snap_to_palette for stray colours in flat or pixel-art styles, add_outline when the style calls for outlines and one is missing or uneven. They create or update a version you then review.
+   When the user asks for colour versions of an asset (elite enemy, other outfit, rarity tiers), use recolor_variant on the approved original instead of generating new images.
+   After approving a stretchable ui asset (panel, frame, button, bar), call set_nine_slice on it and check the stretched preview.
    If an asset is rejected for anything else, regenerate with a corrected prompt that names the specific drift. Retry each asset at most twice.
-5. Finish with a short summary in the user's language: what was made, and anything that still drifts.
+5. When the run made several assets, call check_consistency once before finishing: fix or regenerate what it flags from this run (free fixes first), and name any older assets it flags in the summary.
+6. Finish with a short summary in the user's language: what was made, and anything that still drifts.
 
-Write your messages to the user in the same language they use (usually Chinese). Keep narration brief; the UI already shows every image.`;
+Write everything the user reads (messages, the plan, asset names, review notes, the summary) in the interface language named at the start of each run; image prompts and the style guide's prompt_prefix stay in English. Keep narration brief; the UI already shows every image.`;
 
 export const styleGuideText = (sg: StyleGuide) => JSON.stringify(sg, null, 2);
+
+/** Most earlier notes passed to a redraw. */
+const EARLIER_NOTES_MAX = 6;
+
+/**
+ * Review notes already given on this asset and the versions it was redrawn from, newest first, without
+ * the feedback for this redraw: so Claude doesn't bring back a problem that was fixed before.
+ */
+export function earlierNotes(project: Project, target: Asset, feedback: string) {
+  const chain: Asset[] = [];
+  const seen = new Set<string>();
+  for (let a: Asset | undefined = target; a && !seen.has(a.id); a = project.assets.find((x) => x.id === a!.parentId)) {
+    seen.add(a.id);
+    chain.push(a);
+  }
+  const current = feedback.trim();
+  return chain
+    .flatMap((a) => a.noteLog ?? [])
+    .filter((n) => n.notes !== current)
+    .sort((x, y) => y.at.localeCompare(x.at))
+    .slice(0, EARLIER_NOTES_MAX);
+}
+
+const earlierNotesText = (project: Project, target: Asset, feedback: string) => {
+  const notes = earlierNotes(project, target, feedback);
+  if (!notes.length) return "";
+  return `\n   Earlier notes on this asset and its previous versions (newest first; do not bring these problems back):\n${notes
+    .map((n) => `   - ${n.at.slice(0, 10)} ${n.by === "user" ? "user" : "your review"} (${n.status}): ${n.notes}`)
+    .join("\n")}`;
+};
 
 /** The text block that opens each run: project state plus the user's request (or redraw tasks). */
 export function buildIntro(opts: {
@@ -29,16 +64,23 @@ export function buildIntro(opts: {
   request: string;
   assetTypes: string[];
   redraws?: { target: Asset; feedback: string }[];
+  /** the user's interface language; defaults to the current request's */
+  lang?: Lang;
 }): string {
   const { project } = opts;
   const redraws = opts.redraws ?? [];
   const existing = project.assets.filter((a) => a.status === "approved");
   const typeLabels = opts.assetTypes.filter(isAssetType).map((t) => `${t}（${ASSET_TYPES[t]}）`);
   const notes = project.refs.map((r, i) => (r.note ? `- Reference ${i + 1}: ${r.note}` : "")).filter(Boolean);
+  const lang = opts.lang ?? currentLang();
   return [
+    `Interface language: ${lang === "en" ? "English" : "Simplified Chinese (简体中文)"}. Write to the user in it, even if earlier turns used another language.`,
     `Project: ${project.name}`,
     notes.length
       ? `The user's notes on what to take from each reference image (follow them when building or applying the style guide):\n${notes.join("\n")}`
+      : "",
+    project.conventions
+      ? `The team's own conventions for this project (follow them in every asset; they win over your defaults):\n${project.conventions}`
       : "",
     project.styleGuide
       ? `This project already has a style guide. Reuse it as-is:\n${styleGuideText(project.styleGuide)}`
@@ -52,7 +94,7 @@ export function buildIntro(opts: {
 ${redraws
   .map(
     (r, i) => `${i + 1}. asset ${r.target.id} "${r.target.name}" [${r.target.assetType}]
-   Feedback: ${r.feedback || "(none given: fix whatever drifts from the style)"}
+   Feedback: ${r.feedback || "(none given: fix whatever drifts from the style)"}${earlierNotesText(project, r.target, r.feedback)}
    Previous prompt: ${r.target.prompt}
    → generate_image with replaces_asset_id="${r.target.id}" and consistency_asset_ids=["${r.target.id}"]`,
   )

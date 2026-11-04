@@ -25,6 +25,7 @@ export const GenerateInput = z.object({
   transparent_background: z.boolean(),
   consistency_asset_ids: z.array(z.string()).max(4).optional(),
   frames: z.number().int().min(2).max(16).optional(),
+  fps: z.number().int().min(1).max(30).optional(),
   replaces_asset_id: z.string().optional(),
   tags: z.array(z.string()).max(10).optional(),
 });
@@ -55,4 +56,31 @@ export const RemoveBackgroundInput = z.object({
 export const SnapPaletteInput = z.object({
   asset_id: z.string(),
   dither: z.enum(["none", "ordered"]).optional(),
+});
+
+/** Margins are optional: without them the tool detects the stretchable band itself. */
+export const NineSliceToolInput = z.object({
+  asset_id: z.string(),
+  left: z.number().int().min(0).optional(),
+  top: z.number().int().min(0).optional(),
+  right: z.number().int().min(0).optional(),
+  bottom: z.number().int().min(0).optional(),
+});
+
+export const OutlineInput = z.object({
+  asset_id: z.string(),
+  width: z.number().int().min(1).max(16).optional(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+});
+
+export const RecolorInput = z.object({
+  asset_id: z.string(),
+  swaps: z.array(z.object({ from: z.string().regex(/^#[0-9a-fA-F]{6}$/), to: z.string().regex(/^#[0-9a-fA-F]{6}$/) })).min(1).max(8),
+  name: z.string().max(80).optional(),
+  threshold: z.number().min(5).max(60).optional(),
+});
+
+export const CheckConsistencyInput = z.object({
+  limit: z.number().int().min(1).max(20).optional(),
+  tag: z.string().max(40).optional(),
 });

@@ -4,7 +4,8 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { readZip, solidPng, useTempDataDir, validStyleGuide } from "./helpers.js";
+import sharp from "sharp";
+import { pixel, readZip, solidPng, useTempDataDir, validStyleGuide } from "./helpers.js";
 
 const dataDir = useTempDataDir();
 process.env.AGENT_MODE = "demo";
@@ -219,6 +220,56 @@ describe("HTTP API (demo mode)", () => {
     assert.equal((await json(`/api/projects/${id}/assets/${asset.id}`, { method: "PATCH", body: {} })).status, 400);
   });
 
+  it("sets UI 9-slice margins, carries them to new versions and into both exports", async () => {
+    const run = await json(`/api/projects/${id}/run`, { method: "POST", body: { request: "面板", assetTypes: ["ui"], provider: "mock" } });
+    await events(run.body.jobId);
+    const assets = (await json(`/api/projects/${id}`)).body.assets;
+    const ui = assets.find((a: { assetType: string }) => a.assetType === "ui");
+    const other = assets.find((a: { assetType: string }) => a.assetType !== "ui");
+    const { width, height } = await sharp(Buffer.from(await (await fetch(`${base}/api/projects/${id}/files/${ui.file}`)).arrayBuffer())).metadata();
+    const margins = { left: 10, top: 8, right: 12, bottom: 6 };
+    const patch = (assetId: string, nineSlice: unknown) => json(`/api/projects/${id}/assets/${assetId}`, { method: "PATCH", body: { nineSlice } });
+
+    assert.deepEqual((await patch(ui.id, margins)).body.nineSlice, margins);
+    assert.equal((await patch(other.id, margins)).status, 400, "only UI assets");
+    assert.equal((await patch(ui.id, { ...margins, left: width! - 12 })).status, 400, "left + right must leave a centre");
+    assert.equal((await patch(ui.id, { ...margins, top: 1.5 })).status, 400);
+    assert.equal((await patch(ui.id, { left: 0, top: 0, right: 0, bottom: 0 })).status, 400);
+    assert.equal((await patch("ast_missing", margins)).status, 404);
+    const detected = (await json(`/api/projects/${id}/assets/${ui.id}/nine-slice`)).body;
+    assert.ok("suggestion" in detected);
+    assert.equal((await json(`/api/projects/${id}/assets/${other.id}/nine-slice`)).status, 400);
+
+    // Post-processing keeps the layout, so the new version keeps the margins.
+    const snapped = (await json(`/api/projects/${id}/assets/${ui.id}/snap-palette`, { method: "POST", body: {} })).body;
+    assert.deepEqual(snapped.asset.nineSlice, margins);
+    await json(`/api/projects/${id}/assets/${snapped.asset.id}`, { method: "DELETE" });
+
+    const bundle = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?ids=${ui.id}`)).arrayBuffer()));
+    const entry = JSON.parse(bundle["manifest.json"].data.toString()).assets[0];
+    assert.deepEqual(entry.nineSlice, margins);
+    const tres = bundle[entry.files.godot].data.toString();
+    assert.match(tres, /type="StyleBoxTexture"/);
+    assert.match(tres, new RegExp(`path="res://assets/${entry.files.image}"`));
+    assert.match(tres, /texture_margin_left = 10\.0\ntexture_margin_top = 8\.0\ntexture_margin_right = 12\.0\ntexture_margin_bottom = 6\.0/);
+
+    // The atlas keeps the full image (no trim) and scales the margins with it.
+    const max = 32;
+    const atlas = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export-atlas.zip?ids=${ui.id}&max=${max}`)).arrayBuffer()));
+    const [frame] = Object.values(JSON.parse(atlas["atlas.json"].data.toString()).frames) as {
+      frame: { w: number; h: number };
+      scale9Borders: { x: number; y: number; w: number; h: number };
+    }[];
+    const k = Math.min(max / width!, max / height!);
+    assert.deepEqual([frame.frame.w, frame.frame.h], [Math.round(width! * k), Math.round(height! * k)]);
+    const b = frame.scale9Borders;
+    assert.deepEqual([b.x, b.y], [Math.round(10 * k), Math.round(8 * k)]);
+    assert.deepEqual([b.x + b.w + Math.round(12 * k), b.y + b.h + Math.round(6 * k)], [frame.frame.w, frame.frame.h]);
+
+    const cleared = await patch(ui.id, null);
+    assert.equal(cleared.body.nineSlice, undefined);
+  });
+
   it("exports approved assets as a ZIP", async () => {
     const res = await fetch(`${base}/api/projects/${id}/export.zip`);
     assert.equal(res.status, 200);
@@ -252,6 +303,16 @@ describe("HTTP API (demo mode)", () => {
     assert.equal(anims.length, 1);
     assert.equal(anims[0].frames.length, 4);
     assert.ok(anims[0].frames.every((f: { key: string; frame: string }) => f.key === "atlas" && frames.includes(f.frame)));
+    assert.equal(atlas["atlas.plist"], undefined, "plists only on request");
+    const cocos = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export-atlas.zip?max=64&cocos=1`)).arrayBuffer()));
+    const plist = cocos["atlas.plist"].data.toString();
+    const page = JSON.parse(cocos["atlas.json"].data.toString());
+    for (const [name, { frame: f }] of Object.entries(page.frames) as [string, { frame: { x: number; y: number; w: number; h: number } }][]) {
+      assert.ok(plist.includes(`<key>${name}</key>`), name);
+      assert.ok(plist.includes(`<string>{{${f.x},${f.y}},{${f.w},${f.h}}}</string>`), name);
+    }
+    assert.match(plist, /<key>textureFileName<\/key>\s*<string>atlas\.png<\/string>/);
+    assert.match(cocos["README.txt"].data.toString(), /Cocos Creator/);
 
     const bundle = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?godot=game/art`)).arrayBuffer()));
     const tres = Object.keys(bundle).find((n) => n.endsWith(".tres"))!;
@@ -261,6 +322,530 @@ describe("HTTP API (demo mode)", () => {
 
     assert.equal((await json(`/api/projects/${id}/export-atlas.zip?max=9999`)).status, 400);
     assert.equal((await json(`/api/projects/${id}/export-atlas.zip?size=300`)).status, 400);
+  });
+
+  it("exports Unity .meta files with stable GUIDs, sheet slicing and 9-slice borders", async () => {
+    const assets = (await json(`/api/projects/${id}`)).body.assets;
+    const sheet = assets.find((a: { assetType: string }) => a.assetType === "sprite_sheet");
+    const ui = assets.find((a: { assetType: string }) => a.assetType === "ui");
+    await json(`/api/projects/${id}/assets/${ui.id}`, { method: "PATCH", body: { nineSlice: { left: 10, top: 8, right: 12, bottom: 6 } } });
+    const get = async (q: string) => readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?ids=${sheet.id},${ui.id}${q}`)).arrayBuffer()));
+    const zip = await get("&unity=1&sizes=1");
+    const images = Object.keys(zip).filter((n) => /\.(png|jpe?g|webp)$/.test(n) && !n.startsWith("_references/"));
+    assert.ok(images.length >= 6, images.join());
+    for (const n of images) assert.ok(zip[`${n}.meta`], `${n}.meta`);
+    const manifest = JSON.parse(zip["manifest.json"].data.toString());
+    const files = (assetId: string) => manifest.assets.find((a: { id: string }) => a.id === assetId).files;
+    const sheetMeta = zip[`${files(sheet.id).image}.meta`].data.toString();
+    assert.match(sheetMeta, /spriteMode: 2/);
+    assert.equal(sheetMeta.match(/- serializedVersion: 2\n\s+name: /g)?.length, sheet.frames.length);
+    assert.match(zip[`${files(ui.id).image}.meta`].data.toString(), /spriteBorder: \{x: 10, y: 6, z: 12, w: 8\}/);
+    // The sheet's AnimationClip references exactly the sprites its .meta defines.
+    const clip = zip[files(sheet.id).unity].data.toString();
+    const sheetGuid = sheetMeta.match(/guid: (\w+)/)![1];
+    const spriteIds = [...sheetMeta.matchAll(/internalID: (\d+)/g)].map((m) => m[1]);
+    const keyRefs = [...clip.matchAll(/value: \{fileID: (\d+), guid: (\w+), type: 3\}/g)];
+    assert.deepEqual(keyRefs.map((k) => k[1]), spriteIds);
+    assert.ok(keyRefs.every((k) => k[2] === sheetGuid));
+    assert.ok(zip[`${files(sheet.id).unity}.meta`]);
+    // Same GUIDs on the next export, even after a rename.
+    await json(`/api/projects/${id}/assets/${ui.id}`, { method: "PATCH", body: { name: "面板改名" } });
+    const again = await get("&unity=1");
+    const guid = (z: typeof zip, n: string) => z[n].data.toString().match(/guid: (\w+)/)![1];
+    const renamed = JSON.parse(again["manifest.json"].data.toString()).assets.find((a: { id: string }) => a.id === ui.id).files.image;
+    assert.equal(guid(again, `${renamed}.meta`), guid(zip, `${files(ui.id).image}.meta`));
+    assert.ok(!Object.keys(await get("")).some((n) => n.endsWith(".meta")), "no .meta without ?unity");
+    await json(`/api/projects/${id}/assets/${ui.id}`, { method: "PATCH", body: { nineSlice: null } });
+  });
+
+  it("outlines an asset as a new version and validates the options", async () => {
+    const assets = (await json(`/api/projects/${id}`)).body.assets;
+    const sheet = assets.find((a: { assetType: string }) => a.assetType === "sprite_sheet");
+    const tile = assets.find((a: { assetType: string }) => a.assetType === "tile");
+    const post = (assetId: string, body: unknown) => json(`/api/projects/${id}/assets/${assetId}/outline`, { method: "POST", body });
+    const r = await post(sheet.id, { width: 2 });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.parentId, r.body.frames.length, r.body.status], [sheet.id, sheet.frames.length, "pending_review"]);
+    assert.match(r.body.notes, /2px 描边/);
+    assert.equal((await post(tile.id, {})).status, 400);
+    assert.equal((await post(sheet.id, { width: 0 })).status, 400);
+    assert.equal((await post(sheet.id, { width: 2, color: "blue" })).status, 400);
+    assert.equal((await post("ast_missing", {})).status, 404);
+    await json(`/api/projects/${id}/assets/${r.body.id}`, { method: "DELETE" });
+  });
+
+  it("lists main colours and makes colour-swap variants as sibling assets", async () => {
+    const sheet = (await json(`/api/projects/${id}`)).body.assets.find((a: { assetType: string }) => a.assetType === "sprite_sheet");
+    const { colors } = (await json(`/api/projects/${id}/assets/${sheet.id}/colors`)).body;
+    assert.ok(colors.length >= 1 && colors.every((c: { hex: string; share: number }) => /^#[0-9a-f]{6}$/.test(c.hex) && c.share > 0));
+    const post = (body: unknown) => json(`/api/projects/${id}/assets/${sheet.id}/recolor`, { method: "POST", body });
+    const r = await post({ swaps: [{ from: colors[0].hex, to: "#d84848" }] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.variantOf, r.body.parentId, r.body.status, r.body.frames.length], [sheet.id, undefined, "pending_review", sheet.frames.length]);
+    assert.equal(r.body.name, `${sheet.name}（变体）`);
+    assert.equal((await post({ swaps: [{ from: colors[0].hex, to: "#d84848" }], name: " 精英 " })).body.name, "精英");
+    assert.equal((await post({ swaps: [] })).status, 400);
+    assert.equal((await post({ swaps: [{ from: "red", to: "#d84848" }] })).status, 400);
+    assert.equal((await post({ swaps: [{ from: colors[0].hex, to: "#d84848" }], threshold: 99 })).status, 400);
+    assert.equal((await json(`/api/projects/${id}/assets/ast_missing/colors`)).status, 404);
+    const variants = (await json(`/api/projects/${id}`)).body.assets.filter((a: { variantOf?: string }) => a.variantOf === sheet.id);
+    assert.equal(variants.length, 2);
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: variants.map((v: { id: string }) => v.id) } });
+  });
+
+  it("exports a Godot TileSet built from the tiles", async () => {
+    const tiles = (await json(`/api/projects/${id}`)).body.assets.filter((a: { assetType: string }) => a.assetType === "tile");
+    assert.ok(tiles.length >= 1);
+    const zip = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?status=all&tile=16`)).arrayBuffer()));
+    const { tileset } = JSON.parse(zip["manifest.json"].data.toString());
+    assert.equal(tileset.tileSize, 16);
+    assert.deepEqual(tileset.tiles.map((t: { id: string }) => t.id), tiles.map((t: { id: string }) => t.id));
+    const meta = await sharp(zip["tile/tileset.png"].data).metadata();
+    assert.deepEqual([meta.width, meta.height], [Math.min(8, tiles.length) * 16, Math.ceil(tiles.length / 8) * 16]);
+    const tres = zip["tile/tileset.tres"].data.toString();
+    assert.match(tres, /path="res:\/\/assets\/tile\/tileset\.png"/);
+    assert.equal(tres.match(/^\d+:\d+\/0 = 0$/gm)?.length, tiles.length);
+    assert.equal((await json(`/api/projects/${id}/export.zip?status=all&tile=3`)).status, 400);
+    const other = (await json(`/api/projects/${id}`)).body.assets.find((a: { assetType: string }) => a.assetType !== "tile");
+    const withoutTiles = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?ids=${other.id}`)).arrayBuffer()));
+    assert.equal(JSON.parse(withoutTiles["manifest.json"].data.toString()).tileset, null, "no TileSet without tiles");
+  });
+
+  it("ranks current assets by drift from the style", async () => {
+    const r = await json(`/api/projects/${id}/consistency`);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const assets = (await json(`/api/projects/${id}`)).body.assets as { id: string; parentId?: string; variantOf?: string }[];
+    const superseded = new Set(assets.map((a) => a.parentId).filter(Boolean));
+    const ids = r.body.items.map((i: { id: string }) => i.id);
+    assert.equal(ids.length, assets.filter((a) => !superseded.has(a.id) && !a.variantOf).length);
+    assert.ok(!ids.some((i: string) => superseded.has(i)), "superseded versions are left out");
+    // A colour variant is off-palette on purpose: it doesn't show up as drift.
+    const sheet = assets.find((a) => !superseded.has(a.id) && !a.variantOf && ids.includes(a.id))!;
+    const variant = (await json(`/api/projects/${id}/assets/${sheet.id}/recolor`, { method: "POST", body: { swaps: [{ from: "#000000", to: "#ff00ff" }], threshold: 60 } })).body;
+    assert.ok(!(await json(`/api/projects/${id}/consistency`)).body.items.some((i: { id: string }) => i.id === variant.id));
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: [variant.id] } });
+    const drifts = r.body.items.map((i: { drift: number }) => i.drift);
+    assert.deepEqual(drifts, [...drifts].sort((a, b) => b - a));
+    assert.ok(r.body.items.every((i: { coverage: number; reasons: unknown[] }) => i.coverage >= 0 && i.coverage <= 1 && Array.isArray(i.reasons)));
+    const bare = (await json("/api/projects", { method: "POST", body: { name: "无色板" } })).body;
+    assert.equal((await json(`/api/projects/${bare.id}/consistency`)).status, 400);
+  });
+
+  it("starts an action-set run for a character and validates the request", async () => {
+    assert.ok("idle" in (await json("/api/config")).body.actionPresets);
+    const made = await json(`/api/projects/${id}/run`, { method: "POST", body: { request: "主角", assetTypes: ["character"], provider: "mock" } });
+    await events(made.body.jobId);
+    const assets = (await json(`/api/projects/${id}`)).body.assets;
+    const hero = assets.findLast((a: { assetType: string }) => a.assetType === "character");
+    const other = assets.find((a: { assetType: string }) => a.assetType === "tile");
+    const post = (assetId: string, body: unknown) => json(`/api/projects/${id}/assets/${assetId}/action-set`, { method: "POST", body });
+    assert.equal((await post(other.id, { actions: ["idle"] })).status, 400, "only characters and enemies");
+    assert.equal((await post(hero.id, { actions: [] })).status, 400);
+    assert.equal((await post(hero.id, { actions: ["dance"] })).status, 400, "unknown actions are dropped");
+    assert.equal((await post("ast_missing", { actions: ["idle"] })).status, 404);
+    const before = assets.filter((a: { assetType: string }) => a.assetType === "sprite_sheet").length;
+    const r = await post(hero.id, { actions: ["idle", "walk", "idle"], provider: "mock" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const evs = await events(r.body.jobId);
+    assert.ok(evs.some((e: { type: string }) => e.type === "done"), JSON.stringify(evs.at(-1)));
+    const sheets = (await json(`/api/projects/${id}`)).body.assets.filter((a: { assetType: string }) => a.assetType === "sprite_sheet");
+    assert.equal(sheets.length, before + 2, "one sheet per distinct action");
+    // Demo mode follows the set too: preset frames and fps, tagged with the character's name.
+    const sheetFor = (label: string) => sheets.find((a: { name: string }) => a.name === `${hero.name}·${label}`);
+    assert.deepEqual([sheetFor("待机").frames.length, sheetFor("待机").fps, sheetFor("待机").tags], [4, 6, [hero.name]]);
+    assert.deepEqual([sheetFor("行走").frames.length, sheetFor("行走").fps], [6, 10]);
+    const usage = (await json(`/api/projects/${id}/usage`)).body.runs.find((u: { jobId: string }) => u.jobId === r.body.jobId);
+    assert.equal(usage.request, `动作套装「${hero.name}」：待机、行走`);
+  });
+
+  it("imports the user's own images as approved assets", async () => {
+    const form = (type: string, files: [string, Buffer][], frames?: string) => {
+      const fd = new FormData();
+      fd.append("assetType", type);
+      if (frames) fd.append("frames", frames);
+      for (const [name, data] of files) fd.append("images", new Blob([new Uint8Array(data)], { type: "image/png" }), name);
+      return json(`/api/projects/${id}/assets/import`, { method: "POST", body: fd });
+    };
+    const icon = await solidPng(48, 48, "#7848d8");
+    const r = await form("item_icon", [["火焰剑.png", icon], ["shield.webp.png", icon]]);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const made = r.body.project.assets.filter((a: { id: string }) => r.body.imported.includes(a.id));
+    assert.deepEqual(made.map((a: { name: string }) => a.name), ["火焰剑", "shield.webp"]);
+    assert.deepEqual([made[0].status, made[0].reviewer, made[0].provider, made[0].assetType], ["approved", "user", "import", "item_icon"]);
+    assert.ok(made[0].palette, "palette check when the project has a style guide");
+    // A strip of 3 frames, sliced as asked.
+    const strip = await sharp({ create: { width: 96, height: 32, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+      .composite([0, 1, 2].map((i) => ({ input: { create: { width: 20, height: 20, channels: 4 as const, background: { r: 200, g: 50, b: 50, alpha: 1 } } }, left: i * 32 + 6, top: 6 })))
+      .png().toBuffer();
+    const sheet = await form("sprite_sheet", [["walk.png", strip]], "3");
+    const imported = sheet.body.project.assets.find((a: { id: string }) => a.id === sheet.body.imported[0]);
+    assert.equal(imported.frames.length, 3);
+    assert.equal((await form("dragon", [["x.png", icon]])).status, 400, "unknown type");
+    assert.equal((await form("item_icon", [])).status, 400, "no files");
+    assert.equal((await form("sprite_sheet", [["x.png", icon]], "99")).status, 400, "bad frame count");
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: [...r.body.imported, ...sheet.body.imported] } });
+  });
+
+  it("creates a project that reuses another project's style and references", async () => {
+    const source = (await json(`/api/projects/${id}`)).body;
+    assert.ok(source.styleGuide && source.refs.length);
+    await json(`/api/projects/${id}/refs/${source.refs[0].id}`, { method: "PATCH", body: { note: "只参考配色" } });
+    const r = await json("/api/projects", { method: "POST", body: { name: "第二章", styleFrom: id } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const copy = r.body;
+    assert.deepEqual([copy.name, copy.assets.length, copy.styleGuide], ["第二章", 0, source.styleGuide]);
+    assert.equal(copy.refs.length, source.refs.length);
+    assert.equal(copy.refs[0].note, "只参考配色");
+    assert.ok(copy.refs.every((ref: { id: string }) => !source.refs.some((s: { id: string }) => s.id === ref.id)), "new ref ids");
+    const bytes = async (pid: string, file: string) => Buffer.from(await (await fetch(`${base}/api/projects/${pid}/files/${file}`)).arrayBuffer());
+    assert.ok((await bytes(copy.id, copy.refs[0].file)).equals(await bytes(id, source.refs[0].file)), "reference files copied");
+    const hist = (await json(`/api/projects/${copy.id}/style-history`)).body;
+    assert.deepEqual(hist.map((h: { source: string }) => h.source), ["import"]);
+    assert.equal((await json("/api/projects", { method: "POST", body: { name: "x", styleFrom: "prj_missing" } })).status, 404);
+    // A source without a style guide still lends its references.
+    const bare = (await json("/api/projects", { method: "POST", body: { name: "空" } })).body;
+    const fromBare = (await json("/api/projects", { method: "POST", body: { name: "y", styleFrom: bare.id } })).body;
+    assert.deepEqual([fromBare.styleGuide, fromBare.refs.length], [null, 0]);
+  });
+
+  it("names exported files ASCII-only on request, keeping the original names in the manifest", async () => {
+    const ascii = /^[\x20-\x7e]+$/;
+    const zip = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?status=all&names=ascii&unity=1`)).arrayBuffer()));
+    const bad = Object.keys(zip).filter((n) => !ascii.test(n));
+    assert.deepEqual(bad, [], "every path is ASCII");
+    const manifest = JSON.parse(zip["manifest.json"].data.toString());
+    assert.ok(manifest.assets.some((a: { name: string }) => !ascii.test(a.name)), "original (Chinese) names stay in the manifest");
+    for (const n of Object.keys(zip).filter((k) => k.endsWith(".meta") || k.endsWith(".anim"))) {
+      assert.match(zip[n].data.toString(), /^[\t\n\r\x20-\x7e]*$/, `${n} is ASCII inside too`);
+    }
+    const atlas = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export-atlas.zip?status=all&names=ascii`)).arrayBuffer()));
+    const frames = Object.keys(JSON.parse(atlas["atlas.json"].data.toString()).frames);
+    assert.ok(frames.length && frames.every((f) => ascii.test(f)), frames.join());
+    // Default stays as before.
+    const plain = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?status=all`)).arrayBuffer()));
+    assert.ok(Object.keys(plain).some((n) => !ascii.test(n)));
+  });
+
+  it("bundles a character's sprite sheets into one multi-animation SpriteFrames", async () => {
+    const hero = (await json(`/api/projects/${id}`)).body.assets.findLast((a: { assetType: string }) => a.assetType === "character");
+    const zip = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?status=all`)).arrayBuffer()));
+    const set = JSON.parse(zip["manifest.json"].data.toString()).animationSets.find((s: { tag: string }) => s.tag === hero.name);
+    assert.ok(set, "the action set's sheets share the character's tag");
+    assert.deepEqual(set.animations.map((a: { name: string; loop: boolean; fps: number }) => [a.name, a.loop, a.fps]), [["待机", true, 6], ["行走", true, 10]]);
+    const tres = zip[set.file].data.toString();
+    assert.match(tres, /type="SpriteFrames"/);
+    assert.match(tres, /"name": &"待机"/);
+    const ascii = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?status=all&names=ascii`)).arrayBuffer()));
+    const asciiSet = JSON.parse(ascii["manifest.json"].data.toString()).animationSets.find((s: { tag: string }) => s.tag === hero.name);
+    assert.match(asciiSet.file, /^_animations\/[\x20-\x7e]+\.tres$/);
+    assert.deepEqual(asciiSet.animations.map((a: { name: string }) => a.name), ["idle", "walk"]);
+  });
+
+  it("renders a self-contained style sheet", async () => {
+    const res = await fetch(`${base}/api/projects/${id}/style-sheet.html`);
+    assert.equal(res.headers.get("content-type"), "text/html; charset=utf-8");
+    const html = await res.text();
+    const project = (await json(`/api/projects/${id}`)).body;
+    assert.match(html, /^<!doctype html>/);
+    for (const c of project.styleGuide.palette) assert.ok(html.includes(c.hex), c.hex);
+    assert.ok(html.includes("风格说明书"));
+    assert.match(html, /<html lang="zh-CN">/);
+    const en = await (await fetch(`${base}/api/projects/${id}/style-sheet.html?lang=en`)).text();
+    assert.match(en, /<html lang="en">/);
+    for (const s of ["Style sheet", "Palette", "Art rules", "Approved samples"]) assert.ok(en.includes(s), s);
+    for (const s of ["风格说明书", "画风规则", "已通过素材样例", "由 Game Asset Agent 生成"]) assert.ok(!en.includes(s), s);
+    assert.ok(!/<script/i.test(html), "no scripts");
+    assert.ok(!/src="(?!data:)/.test(html), "every image is inline");
+    assert.ok((html.match(/<img /g) ?? []).length >= project.refs.length + 1, "references and samples");
+    const dl = await fetch(`${base}/api/projects/${id}/style-sheet.html?download=1`);
+    assert.match(dl.headers.get("content-disposition") ?? "", /attachment; filename="style-sheet.html"/);
+    // Names are escaped.
+    await json(`/api/projects/${id}`, { method: "PATCH", body: { name: "<b>x</b>" } });
+    assert.ok((await (await fetch(`${base}/api/projects/${id}/style-sheet.html`)).text()).includes("&lt;b&gt;x&lt;/b&gt;"));
+    await json(`/api/projects/${id}`, { method: "PATCH", body: { name: project.name } });
+  });
+
+  it("post-processes many assets at once, skipping the ones an op doesn't fit", async () => {
+    const assets = (await json(`/api/projects/${id}`)).body.assets;
+    const sheet = assets.find((a: { assetType: string }) => a.assetType === "sprite_sheet");
+    const tile = assets.find((a: { assetType: string }) => a.assetType === "tile");
+    const post = (body: unknown) => json(`/api/projects/${id}/assets/batch-process`, { method: "POST", body });
+    const outlined = await post({ op: "outline", ids: [sheet.id, tile.id, "ast_missing"] });
+    assert.equal(outlined.status, 200, JSON.stringify(outlined.body));
+    assert.deepEqual(outlined.body.done.map((d: { id: string }) => d.id), [sheet.id]);
+    assert.deepEqual(outlined.body.skipped.map((s: { id: string }) => s.id).sort(), ["ast_missing", tile.id].sort());
+    const made = outlined.body.project.assets.find((a: { id: string }) => a.id === outlined.body.done[0].result);
+    assert.equal(made.parentId, sheet.id);
+    const snapped = await post({ op: "snap", ids: [tile.id] });
+    assert.equal(snapped.body.done.length, 1);
+    const cut = await post({ op: "cutout", ids: [tile.id] });
+    assert.deepEqual([cut.body.done.length, cut.body.skipped.length], [0, 1]);
+    assert.equal((await post({ op: "blur", ids: [sheet.id] })).status, 400);
+    assert.equal((await post({ op: "outline", ids: [] })).status, 400);
+    assert.equal((await post({ op: "outline", ids: Array.from({ length: 31 }, (_, i) => `ast_${i}`) })).status, 400);
+    const cleanup = [outlined.body.done[0].result, snapped.body.done[0].result];
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: cleanup } });
+  });
+
+  it("reports project progress stats", async () => {
+    const st = (await json(`/api/projects/${id}/stats`)).body;
+    const assets = (await json(`/api/projects/${id}`)).body.assets as { id: string; parentId?: string }[];
+    const superseded = new Set(assets.map((a) => a.parentId).filter(Boolean));
+    assert.equal(st.current, assets.filter((a) => !superseded.has(a.id)).length);
+    assert.equal(st.byStatus.approved + st.byStatus.pending_review + st.byStatus.rejected, st.current);
+    assert.equal(st.byType.reduce((n: number, t: { current: number }) => n + t.current, 0), st.current);
+    assert.equal(st.superseded, assets.length - st.current);
+  });
+
+  it("narrows the consistency overview to one tag, ranked within the group", async () => {
+    const assets = (await json(`/api/projects/${id}`)).body.assets as { id: string; tags?: string[]; parentId?: string; variantOf?: string }[];
+    const tag = assets.find((a) => a.tags?.length)!.tags![0];
+    const superseded = new Set(assets.map((a) => a.parentId).filter(Boolean));
+    const expected = assets.filter((a) => a.tags?.includes(tag) && !superseded.has(a.id) && !a.variantOf).map((a) => a.id).sort();
+    const r = (await json(`/api/projects/${id}/consistency?tag=${encodeURIComponent(tag)}`)).body;
+    assert.deepEqual(r.items.map((i: { id: string }) => i.id).sort(), expected);
+    const all = (await json(`/api/projects/${id}/consistency`)).body;
+    assert.ok(all.items.length > r.items.length);
+  });
+
+  it("stores project conventions, prints them in the style sheet and carries them to reused styles", async () => {
+    const patch = (conventions: unknown) => json(`/api/projects/${id}`, { method: "PATCH", body: { conventions } });
+    assert.equal((await patch("  图标统一 2px 描边  ")).body.conventions, "图标统一 2px 描边");
+    assert.equal((await patch("x".repeat(3000))).body.conventions.length, 2000);
+    await patch("图标统一 2px 描边\n<不要文字>");
+    const html = await (await fetch(`${base}/api/projects/${id}/style-sheet.html`)).text();
+    assert.ok(html.includes("项目约定") && html.includes("&lt;不要文字&gt;"));
+    const copy = (await json("/api/projects", { method: "POST", body: { name: "约定复用", styleFrom: id } })).body;
+    assert.equal(copy.conventions, "图标统一 2px 描边\n<不要文字>");
+    assert.equal((await patch("   ")).body.conventions, undefined, "blank clears");
+    assert.ok(!(await (await fetch(`${base}/api/projects/${id}/style-sheet.html`)).text()).includes("项目约定"));
+  });
+
+  it("batch-renames in the given order with a zero-padded number", async () => {
+    const ids = (await json(`/api/projects/${id}`)).body.assets.slice(0, 3).map((a: { id: string }) => a.id);
+    const before = (await json(`/api/projects/${id}`)).body.assets.slice(0, 3).map((a: { name: string }) => a.name);
+    const post = (body: object) => json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "rename", ...body } });
+    const r = await post({ ids: [ids[2], ids[0], ids[1], ids[0]], prefix: " coin_ " });
+    assert.equal(r.body.affected, 3, "duplicates count once");
+    const name = (x: string) => r.body.project.assets.find((a: { id: string }) => a.id === x).name;
+    assert.deepEqual([name(ids[2]), name(ids[0]), name(ids[1])], ["coin_01", "coin_02", "coin_03"]);
+    const wide = await post({ ids, prefix: "x", start: 98 });
+    assert.deepEqual(ids.map((x: string) => wide.body.project.assets.find((a: { id: string }) => a.id === x).name), ["x098", "x099", "x100"]);
+    assert.equal((await post({ ids, prefix: "  " })).status, 400);
+    assert.equal((await post({ ids, prefix: "a", start: -1 })).status, 400);
+    for (const [i, x] of ids.entries()) await json(`/api/projects/${id}/assets/${x}`, { method: "PATCH", body: { name: before[i] } });
+  });
+
+  it("finds assets by colour, most first", async () => {
+    const project = (await json(`/api/projects/${id}`)).body;
+    const hex = project.styleGuide.palette[0].hex;
+    const r = (await json(`/api/projects/${id}/assets-by-color?hex=${encodeURIComponent(hex)}`)).body;
+    assert.equal(r.hex, hex.toLowerCase());
+    assert.ok(r.items.length > 0);
+    const shares = r.items.map((i: { share: number }) => i.share);
+    assert.deepEqual(shares, [...shares].sort((a, b) => b - a));
+    assert.ok(shares.every((x: number) => x >= 0.02 && x <= 1));
+    const superseded = new Set(project.assets.map((a: { parentId?: string }) => a.parentId).filter(Boolean));
+    assert.ok(!r.items.some((i: { id: string }) => superseded.has(i.id)));
+    for (const bad of ["hex=red", `hex=${encodeURIComponent(hex)}&threshold=99`, `hex=${encodeURIComponent(hex)}&min=2`]) {
+      assert.equal((await json(`/api/projects/${id}/assets-by-color?${bad}`)).status, 400, bad);
+    }
+  });
+
+  it("moves old versions with an approved newer version to the trash", async () => {
+    const sheet = (await json(`/api/projects/${id}`)).body.assets.find((a: { assetType: string; parentId?: string }) => a.assetType === "sprite_sheet");
+    const newer = (await json(`/api/projects/${id}/assets/batch-process`, { method: "POST", body: { op: "outline", ids: [sheet.id] } })).body.done[0].result;
+    const dry = (await json(`/api/projects/${id}/cleanup-versions?dryRun=1`, { method: "POST" })).body;
+    assert.ok(!dry.ids.includes(sheet.id), "the newer version is still pending review");
+    await json(`/api/projects/${id}/assets/${newer}`, { method: "PATCH", body: { status: "approved" } });
+    const dry2 = (await json(`/api/projects/${id}/cleanup-versions?dryRun=1`, { method: "POST" })).body;
+    assert.ok(dry2.ids.includes(sheet.id));
+    assert.ok((await json(`/api/projects/${id}`)).body.assets.some((a: { id: string }) => a.id === sheet.id), "dry run changes nothing");
+    const done = (await json(`/api/projects/${id}/cleanup-versions`, { method: "POST" })).body;
+    assert.equal(done.affected, dry2.ids.length);
+    assert.ok(done.project.trash.some((a: { id: string }) => a.id === sheet.id));
+    assert.ok(!done.project.assets.some((a: { id: string }) => dry2.ids.includes(a.id)));
+    // Put everything back for the tests that follow.
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "restore", ids: done.ids } });
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: [newer] } });
+  });
+
+  it("starts a project from a built-in style and generates without reference images", async () => {
+    assert.ok("pixel" in (await json("/api/config")).body.stylePresets);
+    const p = (await json("/api/projects", { method: "POST", body: { name: "像素试玩", preset: "pixel" } })).body;
+    assert.deepEqual([p.refs.length, p.styleGuide.rendering.startsWith("16-bit pixel art")], [0, true]);
+    assert.deepEqual((await json(`/api/projects/${p.id}/style-history`)).body.map((h: { source: string }) => h.source), ["preset"]);
+    const run = await json(`/api/projects/${p.id}/run`, { method: "POST", body: { request: "金币", assetTypes: ["item_icon"], provider: "mock" } });
+    const evs = await events(run.body.jobId);
+    assert.ok(evs.some((e: { type: string }) => e.type === "asset"), JSON.stringify(evs.at(-1)));
+    assert.equal((await json("/api/projects", { method: "POST", body: { name: "x", preset: "oil" } })).status, 400);
+    // Without references and without a guide a run still refuses to start.
+    const bare = (await json("/api/projects", { method: "POST", body: { name: "空空" } })).body;
+    const fail = await json(`/api/projects/${bare.id}/run`, { method: "POST", body: { request: "x", provider: "mock" } });
+    const failEvents = await events(fail.body.jobId);
+    assert.match(JSON.stringify(failEvents), /风格预设/);
+  });
+
+  it("rejects inherited object keys as asset types and actions", async () => {
+    const fd = new FormData();
+    fd.append("assetType", "constructor");
+    fd.append("images", new Blob([new Uint8Array(await solidPng(8, 8, "#336699"))], { type: "image/png" }), "x.png");
+    assert.equal((await json(`/api/projects/${id}/assets/import`, { method: "POST", body: fd })).status, 400);
+    const hero = (await json(`/api/projects/${id}`)).body.assets.find((a: { assetType: string }) => a.assetType === "character");
+    assert.equal((await json(`/api/projects/${id}/assets/${hero.id}/action-set`, { method: "POST", body: { actions: ["toString", "__proto__"] } })).status, 400);
+  });
+
+  it("can cut flat backgrounds out on import, keeping the upload restorable", async () => {
+    const onWhite = await sharp({ create: { width: 48, height: 48, channels: 3, background: "#ffffff" } })
+      .composite([{ input: { create: { width: 20, height: 20, channels: 3, background: "#cc2222" } }, left: 14, top: 14 }])
+      .png().toBuffer();
+    const upload = async (assetType: string, cutout: boolean) => {
+      const fd = new FormData();
+      fd.append("assetType", assetType);
+      if (cutout) fd.append("cutout", "1");
+      fd.append("images", new Blob([new Uint8Array(onWhite)], { type: "image/png" }), "盾.png");
+      const r = (await json(`/api/projects/${id}/assets/import`, { method: "POST", body: fd })).body;
+      return r.project.assets.find((a: { id: string }) => a.id === r.imported[0]);
+    };
+    const cut = await upload("item_icon", true);
+    assert.ok(cut.originalFile, "the original upload is kept");
+    const file = Buffer.from(await (await fetch(`${base}/api/projects/${id}/files/${cut.file}`)).arrayBuffer());
+    assert.equal((await pixel(file, 1, 1)).a, 0, "white corner is transparent");
+    assert.equal((await pixel(file, 24, 24)).a, 255, "the subject stays");
+    const plain = await upload("item_icon", false);
+    assert.equal(plain.originalFile, undefined);
+    const tile = await upload("tile", true);
+    assert.equal(tile.originalFile, undefined, "tiles are never cut");
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: [cut.id, plain.id, tile.id] } });
+  });
+
+  it("exports the consistency report as CSV", async () => {
+    const res = await fetch(`${base}/api/projects/${id}/consistency.csv`);
+    assert.equal(res.headers.get("content-type"), "text/csv; charset=utf-8");
+    assert.match(res.headers.get("content-disposition") ?? "", /attachment; filename="consistency.csv"/);
+    const text = await res.text();
+    assert.ok(text.startsWith("排名,素材 id,名称"), "BOM is stripped by fetch().text(); header row first");
+    const json = (await (await fetch(`${base}/api/projects/${id}/consistency`)).json()) as { items: { id: string }[] };
+    const rows = text.trim().split("\r\n").slice(1);
+    assert.equal(rows.length, json.items.length);
+    assert.ok(rows[0].startsWith(`1,${json.items[0].id},`));
+  });
+
+  it("writes server text in the request's language (Accept-Language or ?lang=)", async () => {
+    const csv = await (await fetch(`${base}/api/projects/${id}/consistency.csv?lang=en`)).text();
+    assert.ok(csv.startsWith("Rank,Asset id,Name,Type,Status"), csv.slice(0, 60));
+    const assets = (await json(`/api/projects/${id}`)).body.assets;
+    const sheet = assets.find((a: { assetType: string }) => a.assetType === "sprite_sheet");
+    const res = await fetch(`${base}/api/projects/${id}/assets/batch-process`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept-Language": "en-US,en;q=0.9" },
+      body: JSON.stringify({ op: "outline", ids: [sheet.id, "ast_missing"] }),
+    });
+    const body = (await res.json()) as { done: { result: string }[]; skipped: { reason: string }[]; project: { assets: { id: string; notes?: string }[] } };
+    assert.deepEqual(body.skipped.map((x) => x.reason), ["asset not found"]);
+    const made = body.project.assets.find((a) => a.id === body.done[0].result)!;
+    assert.match(made.notes ?? "", /^2px outline \(#[0-9a-f]{6}\) added to "/);
+    // Without a language, Chinese as before.
+    const zh = await json(`/api/projects/${id}/assets/batch-process`, { method: "POST", body: { op: "outline", ids: [made.id] } });
+    const zhMade = zh.body.project.assets.find((a: { id: string }) => a.id === zh.body.done[0].result);
+    assert.match(zhMade.notes, /^由「/);
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: [made.id, zhMade.id] } });
+  });
+
+  it("returns error messages in the request's language", async () => {
+    const req = (path: string, init: RequestInit, lang?: string) =>
+      fetch(base + path, { ...init, headers: { "Content-Type": "application/json", ...(lang ? { "Accept-Language": lang } : {}) } }).then(async (r) => ({ status: r.status, error: ((await r.json()) as { error: string }).error }));
+    const asset = (await json(`/api/projects/${id}`)).body.assets.find((a: { assetType: string }) => a.assetType === "sprite_sheet");
+    const patch = { method: "PATCH", body: JSON.stringify({ name: " " }) };
+    assert.deepEqual(await req(`/api/projects/${id}/assets/${asset.id}`, patch, "en-GB"), { status: 400, error: "The name cannot be empty" });
+    assert.deepEqual(await req(`/api/projects/${id}/assets/${asset.id}`, patch), { status: 400, error: "名称不能为空" });
+    const batch = { method: "POST", body: JSON.stringify({ action: "explode", ids: [asset.id] }) };
+    assert.equal((await req(`/api/projects/${id}/assets/batch`, batch, "en")).error, "Invalid batch action");
+    const outline = { method: "POST", body: JSON.stringify({ width: 99 }) };
+    assert.equal((await req(`/api/projects/${id}/assets/${asset.id}/outline?lang=en`, outline)).error, "Outline width must be 1–16 px");
+  });
+
+  it("reverts a batch edit to the values recorded before it", async () => {
+    const assets = (await json(`/api/projects/${id}`)).body.assets.slice(0, 2) as { id: string; status: string; reviewer?: string; tags?: string[]; name: string }[];
+    const before = assets.map((a) => ({ id: a.id, status: a.status, reviewer: a.reviewer, tags: a.tags ?? [], name: a.name }));
+    const ids = assets.map((a) => a.id);
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "reject", ids } });
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "rename", ids, prefix: "undo_" } });
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "tag", ids, tags: ["临时"] } });
+    const r = await json(`/api/projects/${id}/assets/revert`, { method: "POST", body: { items: [...before, { ...before[0], id: "ast_gone" }] } });
+    assert.equal(r.body.affected, 2);
+    const after = r.body.project.assets.filter((a: { id: string }) => ids.includes(a.id));
+    assert.deepEqual(
+      after.map((a: { id: string; status: string; reviewer?: string; tags?: string[]; name: string }) => ({ id: a.id, status: a.status, reviewer: a.reviewer, tags: a.tags ?? [], name: a.name })),
+      before,
+    );
+    const bad = (items: unknown) => json(`/api/projects/${id}/assets/revert`, { method: "POST", body: { items } });
+    assert.equal((await bad([])).status, 400);
+    assert.equal((await bad([{ ...before[0], status: "great" }])).status, 400);
+    assert.equal((await bad([{ ...before[0], name: " " }])).status, 400);
+    assert.equal((await bad([{ ...before[0], reviewer: "boss" }])).status, 400);
+  });
+
+  it("finds near-duplicate assets and marks the asset's own versions as related", async () => {
+    const assets = (await json(`/api/projects/${id}`)).body.assets as { id: string; file: string; assetType: string; parentId?: string }[];
+    const orig = assets.find((a) => a.assetType === "item_icon")!;
+    const png = Buffer.from(await (await fetch(`${base}/api/projects/${id}/files/${orig.file}`)).arrayBuffer());
+    const fd = new FormData();
+    fd.append("assetType", "item_icon");
+    fd.append("images", new Blob([new Uint8Array(png)], { type: "image/png" }), "copy.png");
+    const copy = (await json(`/api/projects/${id}/assets/import`, { method: "POST", body: fd })).body.imported[0];
+    const outlined = (await json(`/api/projects/${id}/assets/${orig.id}/outline`, { method: "POST", body: { width: 1 } })).body.id;
+    const { items } = (await json(`/api/projects/${id}/assets/${orig.id}/similar`)).body as { items: { id: string; distance: number; related: boolean }[] };
+    const byId = Object.fromEntries(items.map((i) => [i.id, i]));
+    assert.deepEqual([byId[copy]?.distance, byId[copy]?.related], [0, false], JSON.stringify(items));
+    if (byId[outlined]) assert.equal(byId[outlined].related, true, "a new version of the same asset");
+    assert.ok(!items.some((i) => i.id === orig.id), "never itself");
+    assert.ok(items.every((i, k) => k === 0 || items[k - 1].distance <= i.distance), "closest first");
+    assert.equal((await json(`/api/projects/${id}/assets/ast_missing/similar`)).status, 404);
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: [copy, outlined] } });
+  });
+
+  it("keeps plain requests in the run history so they can be run again", async () => {
+    const plain = await json(`/api/projects/${id}/run`, { method: "POST", body: { request: "再来两个图标", assetTypes: ["item_icon"], provider: "mock" } });
+    await events(plain.body.jobId);
+    const target = (await json(`/api/projects/${id}`)).body.assets[0].id;
+    const redraw = await json(`/api/projects/${id}/run`, { method: "POST", body: { redraws: [{ assetId: target, feedback: "更亮" }], provider: "mock" } });
+    await events(redraw.body.jobId);
+    const runs = (await json(`/api/projects/${id}/usage`)).body.runs as { jobId: string; rerun?: { request: string; assetTypes: string[] } }[];
+    assert.deepEqual(runs.find((r) => r.jobId === plain.body.jobId)?.rerun, { request: "再来两个图标", assetTypes: ["item_icon"] });
+    assert.equal(runs.find((r) => r.jobId === redraw.body.jobId)?.rerun, undefined, "a redraw is tied to its asset");
+  });
+
+  it("groups near-identical assets, keeping the approved one first", async () => {
+    const assets = (await json(`/api/projects/${id}`)).body.assets as { id: string; file: string; assetType: string; status: string }[];
+    const orig = assets.find((a) => a.assetType === "tile")!;
+    const png = Buffer.from(await (await fetch(`${base}/api/projects/${id}/files/${orig.file}`)).arrayBuffer());
+    const fd = new FormData();
+    fd.append("assetType", "tile");
+    fd.append("images", new Blob([new Uint8Array(png)], { type: "image/png" }), "dup-a.png");
+    fd.append("images", new Blob([new Uint8Array(png)], { type: "image/png" }), "dup-b.png");
+    const copies = (await json(`/api/projects/${id}/assets/import`, { method: "POST", body: fd })).body.imported as string[];
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "pending", ids: copies } });
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "approve", ids: [orig.id] } });
+    const { groups } = (await json(`/api/projects/${id}/duplicates`)).body as { groups: string[][] };
+    const group = groups.find((g) => g.includes(copies[0]))!;
+    assert.ok(group, JSON.stringify(groups));
+    assert.ok(copies.every((c) => group.includes(c)));
+    assert.ok(!copies.includes(group[0]), "an approved asset is the one to keep, not a pending copy");
+    assert.ok(groups.every((g, i) => i === 0 || groups[i - 1].length >= g.length), "largest groups first");
+    await json(`/api/projects/${id}/assets/batch`, { method: "POST", body: { action: "purge", ids: copies } });
+  });
+
+  it("keeps a history of review notes", async () => {
+    const target = (await json(`/api/projects/${id}`)).body.assets[0];
+    const before = target.noteLog?.length ?? 0;
+    const patch = (body: unknown) => json(`/api/projects/${id}/assets/${target.id}`, { method: "PATCH", body });
+    await patch({ status: "rejected", notes: "剑太亮" });
+    await patch({ notes: "剑太亮" });
+    const after = (await patch({ status: "approved", notes: "改好了" })).body;
+    const log = after.noteLog.slice(before);
+    assert.deepEqual(log.map((n: { by: string; notes: string; status: string }) => [n.by, n.notes, n.status]), [["user", "剑太亮", "rejected"], ["user", "改好了", "approved"]]);
+    assert.equal(after.notes, "改好了");
   });
 
   it("batch-updates, exports by id, and batch-deletes", async () => {
@@ -382,6 +967,17 @@ describe("HTTP API (demo mode)", () => {
     const sliced = await json(`/api/projects/${id}/assets/${sheet.id}/slice`, { method: "POST", body: { frames: 6, fps: 12 } });
     assert.deepEqual([sliced.body.frames.length, sliced.body.fps], [6, 12]);
     assert.equal((await json(`/api/projects/${id}/assets/${sheet.id}/slice`, { method: "POST", body: { frames: 40 } })).status, 400);
+    // Without fps the current rate is kept; bad rates are refused.
+    const kept = await json(`/api/projects/${id}/assets/${sheet.id}/slice`, { method: "POST", body: { frames: 6 } });
+    assert.equal(kept.body.fps, 12);
+    for (const fps of [0, 31, 1.5, "fast"]) {
+      assert.equal((await json(`/api/projects/${id}/assets/${sheet.id}/slice`, { method: "POST", body: { frames: 6, fps } })).status, 400, String(fps));
+    }
+    // Exports use the saved rate.
+    const bundle = readZip(Buffer.from(await (await fetch(`${base}/api/projects/${id}/export.zip?ids=${sheet.id}&unity=1`)).arrayBuffer()));
+    const godot = Object.entries(bundle).find(([n]) => n.endsWith(".tres"))![1].data.toString();
+    assert.match(godot, /"speed": 12\.0/);
+    assert.match(Object.entries(bundle).find(([n]) => n.endsWith(".anim"))![1].data.toString(), /m_SampleRate: 12/);
     const tile = assets.findLast((a: { assetType: string }) => a.assetType === "tile");
     const tiled = await fetch(`${base}/api/projects/${id}/assets/${tile.id}/tiled.png?n=2`);
     const { default: sharp } = await import("sharp");

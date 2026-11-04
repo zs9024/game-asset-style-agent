@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import type { Response as GptResponse, ResponseFunctionToolCall, ResponseInputContent, ResponseInputItem } from "openai/resources/responses/responses";
 import { config } from "../config.js";
+import { msg } from "../i18n.js";
 import { chatGPTAuth } from "../openai/chatgpt.js";
 import { addTokens } from "../usage/record.js";
 import { pastHardStop } from "./budget.js";
@@ -17,7 +18,7 @@ type ImageOrText = Anthropic.Beta.BetaTextBlockParam | Anthropic.Beta.BetaImageB
 function contentParts(blocks: ImageOrText[]): ResponseInputContent[] {
   return blocks.map((b) => {
     if (b.type === "text") return { type: "input_text", text: b.text };
-    if (b.source.type !== "base64") throw new Error("GPT 参考图必须为内嵌图片");
+    if (b.source.type !== "base64") throw new Error(msg("err.gptBase64"));
     return { type: "input_image", image_url: `data:${b.source.media_type};base64,${b.source.data}`, detail: "auto" };
   });
 }
@@ -41,7 +42,7 @@ export async function runGptAgent(job: Job, opts: RunOptions) {
   const model = config.model;
   const credential = subscription ? await chatGPTAuth.credential() : null;
   const apiKey = subscription ? credential!.accessToken : process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) throw new Error("GPT API 模式需要配置 OPENAI_API_KEY（按 API 用量单独计费）");
+  if (!apiKey) throw new Error(msg("err.gptApiKey"));
   const clientOptions = {
     apiKey, baseURL: subscription ? "https://api.openai.com/v1" : process.env.GPT_BASE_URL?.trim() || "https://api.openai.com/v1",
     // Do not inherit organization/project identifiers from a separate Platform API account.
@@ -52,12 +53,12 @@ export async function runGptAgent(job: Job, opts: RunOptions) {
   const input: ResponseInputItem[] = [...((prepared.history?.messages ?? []) as ResponseInputItem[]), {
     role: "user", content: contentParts(prepared.opening.content as ImageOrText[]),
   }];
-  emit(job, { type: "status", text: subscription ? "GPT 使用 ChatGPT 订阅额度；图像通道另行计费" : "GPT 使用 OpenAI API key，按 API 用量单独计费" });
+  emit(job, { type: "status", text: subscription ? msg("run.gptSubscription") : msg("run.gptApiBilling") });
   reportUsage(job);
   for (let turn = 0; turn < config.maxTurns; turn++) {
     job.abort.signal.throwIfAborted();
     if (pastHardStop(job.budget, job.usage)) {
-      emit(job, { type: "status", text: "估算费用已明显超过上限，强制结束本次运行" });
+      emit(job, { type: "status", text: msg("run.overBudgetShort") });
       return;
     }
     // Refresh between turns; a rotating subscription token may expire during a long job.
@@ -73,17 +74,17 @@ export async function runGptAgent(job: Job, opts: RunOptions) {
     for await (const event of stream) {
       if (event.type === "response.output_text.delta") emit(job, { type: "text", delta: event.delta });
       if (event.type === "response.reasoning_summary_text.done") emit(job, { type: "thinking", text: event.text });
-      if (event.type === "error") throw new Error(`GPT 请求失败：${event.code ?? "unknown_error"} · ${event.message}`);
+      if (event.type === "error") throw new Error(msg("err.gptStream", { code: event.code ?? "unknown_error", message: event.message }));
       if (event.type === "response.failed" || event.type === "response.incomplete") {
         reportTokens(job, event.response);
-        throw new Error(`GPT 运行未完成：${event.response.error?.code ?? event.response.incomplete_details?.reason ?? event.type}。请检查额度与授权；不会自动切换费用来源。`);
+        throw new Error(msg("err.gptIncomplete", { reason: event.response.error?.code ?? event.response.incomplete_details?.reason ?? event.type }));
       }
       if (event.type === "response.completed") response = event.response;
     }
     job.abort.signal.throwIfAborted();
-    if (!response || response.status !== "completed") throw new Error("GPT 事件流中断，未收到 response.completed；本轮未执行工具");
+    if (!response || response.status !== "completed") throw new Error(msg("err.gptInterrupted"));
     reportTokens(job, response);
-    if (response.output.some((item) => item.type === "message" && item.content.some((b) => b.type === "refusal"))) throw new Error("GPT 模型拒绝了该请求");
+    if (response.output.some((item) => item.type === "message" && item.content.some((b) => b.type === "refusal"))) throw new Error(msg("err.gptRefusal"));
     // Preserve encrypted reasoning and all tool-call metadata unchanged across turns/runs.
     input.push(...response.output as ResponseInputItem[]);
     const calls = response.output.filter((item): item is ResponseFunctionToolCall => item.type === "function_call");
@@ -102,5 +103,5 @@ export async function runGptAgent(job: Job, opts: RunOptions) {
     }));
     input.push(...outputs);
   }
-  emit(job, { type: "status", text: `已达到最大轮数 ${config.maxTurns}，停止` });
+  emit(job, { type: "status", text: msg("run.maxTurns", { n: config.maxTurns }) });
 }

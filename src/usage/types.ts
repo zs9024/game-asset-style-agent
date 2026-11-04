@@ -25,6 +25,8 @@ export interface RunUsage {
   mode: "agent" | "demo" | "manual";
   /** Subscription requests consume plan allowance; they are not billed at Platform token rates. */
   agent?: { provider: "claude" | "deepseek" | "gpt"; model: string; authMode?: "api_key" | "chatgpt" };
+  /** what the user asked for, kept for plain requests (not redraws, action sets or direct regeneration) so it can be run again */
+  rerun?: { request: string; assetTypes: string[] };
   /** Agent requests/tokens for every service; legacy API field name. */
   claude: {
     requests: number;

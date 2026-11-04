@@ -4,24 +4,62 @@ import path from "node:path";
 import { runningJobFor } from "../agent/index.js";
 import { StyleGuideInput } from "../agent/schemas.js";
 import {
-  clearConversation, createProject, deleteProject, listProjects, loadConversation, loadProject, projectDir,
+  clearConversation, createProject, deleteProject, listProjects, loadConversation, loadProject, newId, projectDir, readProjectFile, writeProjectFile,
   buildBackup, importBackup, isProjectFile, loadStyleHistory, projectDiskUsage, recordStyleVersion, removeOrphanFiles, styleDiff,
   updateProject,
 } from "../store/index.js";
 import { THUMB_WIDTHS, getThumb } from "../image/thumbs.js";
 import { isPixelArt } from "../image/sizes.js";
 import type { Project } from "../store/types.js";
+import { buildStyleSheet } from "../export/styleSheet.js";
+import { STYLE_PRESETS } from "../domain/stylePresets.js";
 import { attachment, pid } from "./util.js";
+import { msg } from "../i18n.js";
 
 export const projectsRouter = Router();
+
+/** Longest project conventions text, in characters. */
+const MAX_CONVENTIONS = 2000;
 
 projectsRouter.get("/api/projects", async (_req, res) => {
   const all = await listProjects();
   res.json(all.map((p) => ({ id: p.id, name: p.name, createdAt: p.createdAt, assets: p.assets.length, cover: p.refs[0]?.file })));
 });
 
+/**
+ * Create a project; { styleFrom: "<projectId>" } copies that project's style guide and reference images (with notes),
+ * { preset: "pixel" | "flat" | "watercolor" } starts from a built-in style guide instead.
+ */
 projectsRouter.post("/api/projects", async (req, res) => {
-  res.json(await createProject(String(req.body?.name ?? "").slice(0, 80)));
+  const preset = req.body?.preset ? String(req.body.preset) : null;
+  if (preset && !Object.hasOwn(STYLE_PRESETS, preset)) return void res.status(400).json({ error: msg("err.badPreset") });
+  const fromId = req.body?.styleFrom ? String(req.body.styleFrom) : null;
+  const source = fromId ? (await listProjects()).find((p) => p.id === fromId) : null;
+  if (fromId && !source) return void res.status(404).json({ error: msg("err.noSourceProject") });
+  const created = await createProject(String(req.body?.name ?? "").slice(0, 80));
+  if (!source && preset) {
+    // A built-in style: the project can generate before any reference image is uploaded.
+    const guide = STYLE_PRESETS[preset].guide;
+    const p = await updateProject(created.id, (p) => void (p.styleGuide = guide));
+    await recordStyleVersion(created.id, guide, "preset");
+    return void res.json(p);
+  }
+  if (!source) return void res.json(created);
+  const refs = await Promise.all(
+    source.refs.map(async (r) => {
+      const id = newId("ref");
+      const file = `refs/${id}.png`;
+      await writeProjectFile(created.id, file, await readProjectFile(source.id, r.file));
+      return { ...r, id, file };
+    }),
+  );
+  const p = await updateProject(created.id, (p) => {
+    p.refs = refs;
+    p.styleGuide = source.styleGuide;
+    if (source.conventions) p.conventions = source.conventions;
+  });
+  if (source.styleGuide) await recordStyleVersion(created.id, source.styleGuide, "import");
+  res.json(p);
 });
 
 projectsRouter.get("/api/projects/:id", async (req, res) => {
@@ -32,6 +70,11 @@ projectsRouter.patch("/api/projects/:id", async (req, res) => {
   let cleared = null as Project["styleGuide"];
   const p = await updateProject(pid(req), (p) => {
     if (typeof req.body?.name === "string") p.name = req.body.name.slice(0, 80);
+    if (typeof req.body?.conventions === "string") {
+      const text = req.body.conventions.trim().slice(0, MAX_CONVENTIONS);
+      if (text) p.conventions = text;
+      else delete p.conventions;
+    }
     if (req.body?.resetStyle) {
       cleared = p.styleGuide;
       p.styleGuide = null;
@@ -44,7 +87,7 @@ projectsRouter.patch("/api/projects/:id", async (req, res) => {
 
 projectsRouter.delete("/api/projects/:id", async (req, res) => {
   // A running job would keep writing into the deleted folder.
-  if (runningJobFor(pid(req))) return void res.status(409).json({ error: "该项目有任务在运行，请先停止" });
+  if (runningJobFor(pid(req))) return void res.status(409).json({ error: msg("err.runningStop") });
   await deleteProject(pid(req));
   res.json({ ok: true });
 });
@@ -53,7 +96,7 @@ projectsRouter.put("/api/projects/:id/style-guide", async (req, res) => {
   const parsed = StyleGuideInput.safeParse(req.body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    return void res.status(400).json({ error: `风格指南字段无效：${issue.path.join(".")} ${issue.message}` });
+    return void res.status(400).json({ error: msg("err.badStyleField", { field: issue.path.join("."), detail: issue.message }) });
   }
   let previous = null as typeof parsed.data | null;
   const project = await updateProject(pid(req), (p) => {
@@ -79,7 +122,7 @@ projectsRouter.get("/api/projects/:id/style-history", async (req, res) => {
 projectsRouter.post("/api/projects/:id/style-history/:index/restore", async (req, res) => {
   const list = await loadStyleHistory(pid(req));
   const v = list[Number(req.params.index)];
-  if (!v || !/^\d+$/.test(String(req.params.index))) return void res.status(404).json({ error: "没有这个历史版本" });
+  if (!v || !/^\d+$/.test(String(req.params.index))) return void res.status(404).json({ error: msg("err.noHistoryVersion") });
   const project = await updateProject(pid(req), (p) => void (p.styleGuide = v.styleGuide));
   await recordStyleVersion(project.id, v.styleGuide, "restore");
   res.json(project);
@@ -107,7 +150,7 @@ projectsRouter.get("/api/projects/:id/thumbs/*rel", async (req, res) => {
   const rel = ([] as string[]).concat(req.params.rel as string | string[]).join("/");
   if (!isProjectFile(rel)) return void res.status(400).end();
   const w = Number(req.query.w ?? 320);
-  if (!(THUMB_WIDTHS as readonly number[]).includes(w)) return void res.status(400).json({ error: `w 需为 ${THUMB_WIDTHS.join(" / ")}` });
+  if (!(THUMB_WIDTHS as readonly number[]).includes(w)) return void res.status(400).json({ error: msg("err.thumbWidth", { widths: THUMB_WIDTHS.join(" / ") }) });
   const project = await loadProject(pid(req));
   // Asset art in a pixel style keeps hard edges; reference photos/paintings use smooth scaling.
   const pixel = rel.startsWith("assets/") && isPixelArt(project.styleGuide);
@@ -127,11 +170,20 @@ projectsRouter.get("/api/projects/:id/storage", async (req, res) => {
 /** Delete files no asset or reference owns. Refused while a job may be writing new files. */
 projectsRouter.post("/api/projects/:id/cleanup", async (req, res) => {
   const project = await loadProject(pid(req));
-  if (runningJobFor(project.id)) return void res.status(409).json({ error: "该项目有任务在运行，请稍后再清理" });
+  if (runningJobFor(project.id)) return void res.status(409).json({ error: msg("err.runningCleanup") });
   res.json(await removeOrphanFiles(project));
 });
 
 /** Whole-project backup: metadata, conversation, usage log and every file. */
+/** One-page HTML style sheet (palette, rules, references, approved samples); ?download=1 saves it as a file. */
+projectsRouter.get("/api/projects/:id/style-sheet.html", async (req, res) => {
+  const project = await loadProject(pid(req));
+  const html = await buildStyleSheet(project);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  if (req.query.download) res.setHeader("Content-Disposition", attachment("style-sheet.html", `${project.name}_${msg("file.styleSheet")}.html`));
+  res.send(html);
+});
+
 projectsRouter.get("/api/projects/:id/backup.zip", async (req, res) => {
   const { filename, zip } = await buildBackup(pid(req));
   res.setHeader("Content-Type", "application/zip");
@@ -146,7 +198,7 @@ const backupUpload = multer({
 
 /** Restore a backup as a new project. */
 projectsRouter.post("/api/projects/import", backupUpload.single("backup"), async (req, res) => {
-  if (!req.file) return void res.status(400).json({ error: "请选择备份文件（.zip）" });
+  if (!req.file) return void res.status(400).json({ error: msg("err.needBackup") });
   try {
     const { project, skipped } = await importBackup(req.file.buffer);
     res.json({ project, skipped });

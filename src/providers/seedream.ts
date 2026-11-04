@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { msg } from "../i18n.js";
 import { fetchWithRetry } from "./retry.js";
 import { type Aspect, type ImageProvider, failOnHttpError } from "./types.js";
 
@@ -11,9 +12,9 @@ const SIZES = {
 
 /** Explicit dimensions preserve the requested aspect; sheets use one square cell per frame. */
 export function seedreamSize(aspect: Aspect, frames: number | undefined, tier = process.env.SEEDREAM_SIZE?.trim() || "2K") {
-  if (tier !== "1K" && tier !== "1.5K" && tier !== "2K") throw new Error("SEEDREAM_SIZE 必须为 1K、1.5K 或 2K");
+  if (tier !== "1K" && tier !== "1.5K" && tier !== "2K") throw new Error(msg("err.seedreamSize"));
   if (frames !== undefined) {
-    if (!Number.isInteger(frames) || frames < 2 || frames > 16) throw new Error("Seedream 精灵表帧数必须为 2–16");
+    if (!Number.isInteger(frames) || frames < 2 || frames > 16) throw new Error(msg("err.seedreamFrames"));
     const base = { "1K": 1024, "1.5K": 1536, "2K": 2048 }[tier];
     const cell = Math.floor(base / Math.sqrt(frames) / 16) * 16;
     return `${cell * frames}x${cell}`;
@@ -33,15 +34,15 @@ export const seedream: ImageProvider = {
   available: () => !!process.env.ARK_API_KEY?.trim(),
   async generate(req, signal) {
     const key = process.env.ARK_API_KEY?.trim();
-    if (!key) throw new Error("请配置 ARK_API_KEY 以使用 Seedream 图像通道");
+    if (!key) throw new Error(msg("err.seedreamKey"));
     const size = seedreamSize(req.aspect, req.frames);
     const watermark = process.env.SEEDREAM_WATERMARK?.trim().toLowerCase() || "false";
-    if (watermark !== "true" && watermark !== "false") throw new Error("SEEDREAM_WATERMARK 必须为 true 或 false");
+    if (watermark !== "true" && watermark !== "false") throw new Error(msg("err.seedreamWatermark"));
     const responseFormat = process.env.SEEDREAM_RESPONSE_FORMAT?.trim() || "b64_json";
-    if (responseFormat !== "b64_json" && responseFormat !== "url") throw new Error("SEEDREAM_RESPONSE_FORMAT 必须为 b64_json 或 url");
+    if (responseFormat !== "b64_json" && responseFormat !== "url") throw new Error(msg("err.seedreamFormat"));
     const base = (process.env.SEEDREAM_BASE_URL?.trim() || "https://ark.cn-beijing.volces.com/api/v3").replace(/\/+$/, "");
     if (req.references.length > MAX_REFERENCES) {
-      req.onNotice?.(`Seedream 最多使用 ${MAX_REFERENCES} 张参考图，本次从 ${req.references.length} 张中保留前 ${MAX_REFERENCES} 张（已有素材参考优先），其余未发送`);
+      req.onNotice?.(msg("run.seedreamRefs", { max: MAX_REFERENCES, shown: req.references.length }));
     }
     // Native alpha needs exactly one alpha reference. Normal project references are flattened JPEGs,
     // so ask for a flat backdrop and let the existing asset pipeline cut it out locally.
@@ -61,23 +62,23 @@ export const seedream: ImageProvider = {
     const json = await res.json() as SeedreamResponse;
     const image = json.data?.[0];
     const error = json.error ?? image?.error;
-    if (error) throw new Error(`Seedream 生图失败：${error.code ?? "unknown_error"}${error.message ? ` · ${error.message.slice(0, 300)}` : ""}`);
+    if (error) throw new Error(msg("err.seedreamFailed", { code: error.code ?? "unknown_error", detail: error.message ? ` · ${error.message.slice(0, 300)}` : "" }));
     let data: Buffer;
     if (image?.b64_json) {
       data = Buffer.from(image.b64_json.replace(/^data:image\/[\w.+-]+;base64,/i, ""), "base64");
     } else if (image?.url) {
       const url = new URL(image.url);
-      if (url.protocol !== "https:") throw new Error("Seedream 返回的图片下载地址必须为 HTTPS");
+      if (url.protocol !== "https:") throw new Error(msg("err.seedreamHttps"));
       // Only retry the download here, never re-submit a successful generation to obtain the bytes.
       // A signed image URL does not need (and must not receive) the Ark API key.
       const download = await fetchWithRetry(url.toString(), { signal }, { onRetry: req.onRetry });
-      await failOnHttpError(download, "Seedream 图片下载");
+      await failOnHttpError(download, msg("err.seedreamDownload"));
       data = Buffer.from(await download.arrayBuffer());
     } else {
-      throw new Error("Seedream 未返回图片（缺少 b64_json 或 url）");
+      throw new Error(msg("err.seedreamNoImage"));
     }
     const metadata = await sharp(data).metadata().catch(() => null);
-    if (!metadata || (metadata.format !== "png" && metadata.format !== "jpeg")) throw new Error("Seedream 返回的图片无效或格式不是 PNG/JPEG");
+    if (!metadata || (metadata.format !== "png" && metadata.format !== "jpeg")) throw new Error(msg("err.seedreamInvalidImage"));
     return { data, mime: metadata.format === "jpeg" ? "image/jpeg" : "image/png" };
   },
 };

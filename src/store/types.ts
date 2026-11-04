@@ -1,3 +1,5 @@
+import type { NineSlice } from "../domain/nineSlice.js";
+
 export interface PaletteColor {
   hex: string;
   role: string;
@@ -50,9 +52,15 @@ export interface Asset {
   originalFile?: string;
   /** previous version this asset was redrawn from */
   parentId?: string;
+  /** colour-swap variant of this asset (a sibling, not a newer version) */
+  variantOf?: string;
   reviewer?: "agent" | "user";
   /** user / agent labels for grouping, e.g. a level or set name */
   tags?: string[];
+  /** ui only: 9-slice margins in pixels of `file` */
+  nineSlice?: NineSlice;
+  /** review notes over time, oldest first; the latest is also in `notes` */
+  noteLog?: { at: string; by: "agent" | "user"; notes: string; status: AssetStatus; score?: number }[];
   /** palette consistency, measured against the style guide when the asset was made */
   palette?: { coverage: number; meanDeltaE: number; offPalette: { hex: string; share: number }[] };
 }
@@ -65,6 +73,8 @@ export interface Project {
   createdAt: string;
   refs: RefImage[];
   styleGuide: StyleGuide | null;
+  /** the team's own art rules in free text, sent to Claude with every run */
+  conventions?: string;
   assets: Asset[];
   /** deleted assets, kept with their files until restored or purged */
   trash?: TrashedAsset[];

@@ -8,6 +8,7 @@ import { prepareRun } from "./prepare.js";
 import { SYSTEM } from "./prompts.js";
 import { runTool } from "./runTool.js";
 import { tools } from "./tools.js";
+import { msg } from "../i18n.js";
 
 type Message = Anthropic.Beta.BetaMessageParam;
 
@@ -17,7 +18,7 @@ export async function runAgent(job: Job, opts: RunOptions) {
   if (agentProvider === "gpt") return runGptAgent(job, opts);
   const deepseek = agentProvider === "deepseek";
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
-  if (deepseek && !apiKey) throw new Error("请配置 DEEPSEEK_API_KEY");
+  if (deepseek && !apiKey) throw new Error(msg("err.deepseekKey"));
   const client = deepseek
     ? new Anthropic({ apiKey, authToken: null, baseURL: process.env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com/anthropic" })
     : new Anthropic();
@@ -28,7 +29,7 @@ export async function runAgent(job: Job, opts: RunOptions) {
 
   for (let turn = 0; turn < config.maxTurns; turn++) {
     if (pastHardStop(job.budget, job.usage)) {
-      emit(job, { type: "status", text: `估算费用 $${job.usage.cost.total.toFixed(3)} 已明显超过上限 $${job.budget.maxUsd}，强制结束本次运行` });
+      emit(job, { type: "status", text: msg("run.overBudget", { cost: job.usage.cost.total.toFixed(3), max: String(job.budget.maxUsd) }) });
       return;
     }
     const stream = client.beta.messages.stream(
@@ -64,7 +65,7 @@ export async function runAgent(job: Job, opts: RunOptions) {
         reportUsage(job);
       }
       if (err instanceof Anthropic.APIError || job.abort.signal.aborted || jsonRetries++ >= 2) throw err;
-      emit(job, { type: "status", text: "工具参数解析失败，重试本轮" });
+      emit(job, { type: "status", text: msg("run.toolParseRetry") });
       continue;
     }
 
@@ -76,7 +77,7 @@ export async function runAgent(job: Job, opts: RunOptions) {
     }
 
     if (message.stop_reason === "refusal") {
-      throw new Error(`模型拒绝了该请求${message.stop_details?.explanation ? `：${message.stop_details.explanation}` : ""}`);
+      throw new Error(msg("err.refused") + (message.stop_details?.explanation ? `: ${message.stop_details.explanation}` : ""));
     }
     if (message.stop_reason === "pause_turn") {
       messages.push({ role: "assistant", content: message.content });
@@ -90,7 +91,7 @@ export async function runAgent(job: Job, opts: RunOptions) {
       await persist(messages);
       return;
     }
-    if (message.stop_reason === "max_tokens") throw new Error("输出超出 max_tokens，工具参数被截断");
+    if (message.stop_reason === "max_tokens") throw new Error(msg("err.maxTokens"));
 
     messages.push({ role: "assistant", content: message.content });
     for (const t of toolUses) emit(job, { type: "tool", name: t.name, input: t.input });
@@ -98,5 +99,5 @@ export async function runAgent(job: Job, opts: RunOptions) {
     const results = await Promise.all(toolUses.map((t) => runTool(job, provider, t)));
     messages.push({ role: "user", content: results });
   }
-  emit(job, { type: "status", text: `已达到最大轮数 ${config.maxTurns}，停止` });
+  emit(job, { type: "status", text: msg("run.maxTurns", { n: config.maxTurns }) });
 }

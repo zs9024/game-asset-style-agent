@@ -1,8 +1,12 @@
 import sharp from "sharp";
+import type { NineSlice } from "../domain/nineSlice.js";
+import { msg } from "../i18n.js";
 
 export interface AtlasInput {
   name: string;
   data: Buffer;
+  /** written to the frame as TexturePacker's scale9Borders */
+  nineSlice?: NineSlice;
 }
 
 export interface Placed {
@@ -28,7 +32,7 @@ const nextPow2 = (n: number) => 2 ** Math.ceil(Math.log2(Math.max(1, n)));
  */
 export function packRects(rects: { name: string; w: number; h: number }[], maxSize = 2048, padding = 2): AtlasPage[] {
   for (const r of rects) {
-    if (r.w + padding * 2 > maxSize || r.h + padding * 2 > maxSize) throw new Error(`${r.name} (${r.w}×${r.h}) 超过图集最大尺寸 ${maxSize}`);
+    if (r.w + padding * 2 > maxSize || r.h + padding * 2 > maxSize) throw new Error(msg("err.atlasTooBig", { name: r.name, w: r.w, h: r.h, max: maxSize }));
   }
   let remaining = [...rects].sort((a, b) => b.h - a.h || b.w - a.w || a.name.localeCompare(b.name));
   const pages: AtlasPage[] = [];
@@ -92,6 +96,7 @@ export async function buildAtlas(images: AtlasInput[], opts: { maxSize?: number;
   const sizes = await Promise.all(images.map(async (i) => ({ name: i.name, ...(await sharp(i.data).metadata()) })));
   const pages = packRects(sizes.map((s) => ({ name: s.name, w: s.width!, h: s.height! })), opts.maxSize ?? 2048, padding);
   const byName = new Map(images.map((i) => [i.name, i.data]));
+  const sliceOf = new Map(images.flatMap((i) => (i.nineSlice ? [[i.name, i.nineSlice] as const] : [])));
   const base = opts.baseName ?? "atlas";
   return {
     pages: await Promise.all(
@@ -102,16 +107,21 @@ export async function buildAtlas(images: AtlasInput[], opts: { maxSize?: number;
           .png()
           .toBuffer();
         const frames = Object.fromEntries(
-          p.frames.map((f) => [
-            f.name,
-            {
-              frame: { x: f.x, y: f.y, w: f.w, h: f.h },
-              rotated: false,
-              trimmed: false,
-              spriteSourceSize: { x: 0, y: 0, w: f.w, h: f.h },
-              sourceSize: { w: f.w, h: f.h },
-            },
-          ]),
+          p.frames.map((f) => {
+            const s = sliceOf.get(f.name);
+            return [
+              f.name,
+              {
+                frame: { x: f.x, y: f.y, w: f.w, h: f.h },
+                rotated: false,
+                trimmed: false,
+                spriteSourceSize: { x: 0, y: 0, w: f.w, h: f.h },
+                sourceSize: { w: f.w, h: f.h },
+                // TexturePacker's 9-slice field: the stretchable centre rectangle
+                ...(s ? { scale9Borders: { x: s.left, y: s.top, w: f.w - s.left - s.right, h: f.h - s.top - s.bottom } } : {}),
+              },
+            ];
+          }),
         );
         const json = {
           frames,

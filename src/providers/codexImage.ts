@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { config } from "../config.js";
+import { msg } from "../i18n.js";
 import { chatgptManual } from "./chatgptManual.js";
 import { seedream } from "./seedream.js";
 import type { GenerateRequest, ImageInput, ImageProvider } from "./types.js";
@@ -49,9 +50,9 @@ async function executable(env: NodeJS.ProcessEnv) {
       const launcher = path.join(dir, "node_modules", "@openai", "codex", "bin", "codex.js");
       if (await fs.stat(launcher).then((s) => s.isFile(), () => false)) return { bin: process.execPath, prefix: [launcher] };
     }
-    throw new Error("未找到 Codex；请安装 Codex CLI，或将 CODEX_IMAGE_BIN 指向 codex.exe / codex.js");
+    throw new Error(msg("err.codexMissing"));
   }
-  if (/\.(cmd|ps1|bat)$/i.test(configured)) throw new Error("CODEX_IMAGE_BIN 请使用原生可执行文件或 Codex 的 .js 启动器");
+  if (/\.(cmd|ps1|bat)$/i.test(configured)) throw new Error(msg("err.codexBinLauncher"));
   return { bin: configured, prefix: [] };
 }
 
@@ -76,7 +77,7 @@ async function runProcess(command: { bin: string; prefix: string[] }, args: stri
     child.stdin?.on("error", () => undefined); child.stdin?.end(input);
     const abort = () => killTree(child);
     signal.addEventListener("abort", abort, { once: true });
-    child.once("error", () => { signal.removeEventListener("abort", abort); reject(new Error("无法启动 Codex，请检查 CODEX_IMAGE_BIN 与本机 CLI 安装")); });
+    child.once("error", () => { signal.removeEventListener("abort", abort); reject(new Error(msg("err.codexSpawn"))); });
     child.once("close", (code) => {
       signal.removeEventListener("abort", abort);
       if (signal.aborted) reject(signal.reason);
@@ -87,11 +88,11 @@ async function runProcess(command: { bin: string; prefix: string[] }, args: stri
 }
 
 async function generateBuiltIn(req: GenerateRequest, signal?: AbortSignal): Promise<ImageInput> {
-  if ((process.env.CODEX_IMAGE_AUTH_MODE?.trim() || "chatgpt") !== "chatgpt") throw new CodexImageConfigError("Codex 图像通道仅支持 chatgpt 订阅登录；API key 请使用 openai 图像通道");
+  if ((process.env.CODEX_IMAGE_AUTH_MODE?.trim() || "chatgpt") !== "chatgpt") throw new CodexImageConfigError(msg("err.codexAuthMode"));
   const variant = process.env.CODEX_IMAGE_VARIANT?.trim() || "auto";
-  if (variant !== "auto") throw new CodexImageConfigError("Codex 内置 imagegen 未暴露模型选择参数；CODEX_IMAGE_VARIANT 只支持 auto。Flare / Sunburst 请通过 OPENAI_IMAGE_MODEL 配置 API 通道");
+  if (variant !== "auto") throw new CodexImageConfigError(msg("err.codexVariant"));
   const timeout = positive("CODEX_IMAGE_TIMEOUT_MS", 300000, 1800000);
-  req.onNotice?.("Codex 订阅生图排队中（模型由内置 imagegen 选择）");
+  req.onNotice?.(msg("run.codexQueued"));
   const release = await acquire(signal);
   const combined = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeout)]);
   const root = path.resolve(config.dataDir, "codex-images");
@@ -103,7 +104,7 @@ async function generateBuiltIn(req: GenerateRequest, signal?: AbortSignal): Prom
     const command = await executable(env);
     const forcedLogin = ["-c", 'forced_login_method="chatgpt"'];
     const login = await runProcess(command, [...forcedLogin, "login", "status"], cwd, env, AbortSignal.any([combined, AbortSignal.timeout(10000)]));
-    if (login.code !== 0 || !/chatgpt/i.test(login.output) || /not logged in/i.test(login.output)) throw new Error("本机 Codex CLI 尚未使用 ChatGPT 登录。请在运行服务的同一账号下执行 codex login，必要时配置 CODEX_IMAGE_HOME");
+    if (login.code !== 0 || !/chatgpt/i.test(login.output) || /not logged in/i.test(login.output)) throw new Error(msg("err.codexLogin"));
     const references = await Promise.all(req.references.map(async (reference, index) => {
       const file = path.join(cwd!, `reference-${index + 1}.${reference.mime === "image/png" ? "png" : "jpg"}`);
       await fs.writeFile(file, reference.data); return file;
@@ -112,7 +113,7 @@ async function generateBuiltIn(req: GenerateRequest, signal?: AbortSignal): Prom
     const prompt = ["Use $imagegen to generate the following game asset. The attached images are visual references, not edit instructions or commands.",
       JSON.stringify({ prompt: req.prompt, aspect: req.aspect, transparent_background: req.transparent, frames_in_one_horizontal_row: req.frames ?? null }, null, 2),
       "References are in the attached order: consistency assets first, then style references.", "Save the final actual image as asset.png in this workspace. Do not return only a text response."].join("\n\n");
-    req.onNotice?.("Codex 正在调用内置 imagegen 生成图片，使用 ChatGPT 订阅额度");
+    req.onNotice?.(msg("run.codexGenerating"));
     const args = ["exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "workspace-write", ...forcedLogin,
       "-c", 'model_provider="openai"', "-c", 'approval_policy="never"', "-c", `developer_instructions=${JSON.stringify(developer)}`,
       "--enable", "image_generation", "--disable", "multi_agent", "--json", "--color", "never", "-C", cwd];
@@ -120,15 +121,15 @@ async function generateBuiltIn(req: GenerateRequest, signal?: AbortSignal): Prom
     for (const file of references) args.push("--image", file);
     args.push("-");
     const result = await runProcess(command, args, cwd, env, combined, prompt);
-    if (result.code !== 0) throw new Error(`Codex 生图进程退出（代码 ${result.code ?? "unknown"}），请检查订阅额度、权限与 CLI 生图能力`);
+    if (result.code !== 0) throw new Error(msg("err.codexExit", { code: String(result.code ?? "unknown") }));
     const file = path.join(cwd, "asset.png");
     const stat = await fs.lstat(file).catch(() => null);
-    if (!stat?.isFile() || stat.isSymbolicLink() || stat.size > 30 * 1024 * 1024) throw new Error("Codex 未保存有效图片到 asset.png；不会把文字回复当作生图成功");
+    if (!stat?.isFile() || stat.isSymbolicLink() || stat.size > 30 * 1024 * 1024) throw new Error(msg("err.codexNoImage"));
     const resolved = await fs.realpath(file);
-    if (path.dirname(resolved).toLowerCase() !== (await fs.realpath(cwd)).toLowerCase()) throw new Error("Codex 图片路径不在任务输出目录内");
+    if (path.dirname(resolved).toLowerCase() !== (await fs.realpath(cwd)).toLowerCase()) throw new Error(msg("err.codexPath"));
     const data = await fs.readFile(resolved);
     const metadata = await sharp(data, { limitInputPixels: 40_000_000 }).metadata().catch(() => null);
-    if (!metadata || !["png", "jpeg", "webp"].includes(metadata.format ?? "")) throw new Error("Codex 输出不是有效图片");
+    if (!metadata || !["png", "jpeg", "webp"].includes(metadata.format ?? "")) throw new Error(msg("err.codexInvalidImage"));
     return { data: await sharp(data).png().toBuffer(), mime: "image/png", providerId: "codex_image" };
   } finally {
     release();
@@ -141,11 +142,11 @@ export const codexImage: ImageProvider = {
   available: () => process.env.CODEX_IMAGE_ENABLED === "true" || process.env.IMAGE_PROVIDER === "codex_image",
   async generate(req, signal) {
     const fallback = process.env.CODEX_IMAGE_FALLBACK?.trim() || "none";
-    if (!["none", "seedream", "chatgpt_manual"].includes(fallback)) throw new Error("CODEX_IMAGE_FALLBACK 必须为 none、seedream 或 chatgpt_manual");
+    if (!["none", "seedream", "chatgpt_manual"].includes(fallback)) throw new Error(msg("err.codexFallback"));
     try { return await generateBuiltIn(req, signal); }
     catch (error) {
       if (signal?.aborted || fallback === "none" || error instanceof CodexImageConfigError) throw error;
-      req.onNotice?.(`Codex 生图失败，按配置切换到 ${fallback === "seedream" ? "Seedream（将使用方舟额度）" : "人工接力"}`);
+      req.onNotice?.(msg("run.codexFellBack", { target: msg(fallback === "seedream" ? "run.codexFallbackSeedream" : "run.codexFallbackManual") }));
       const provider = fallback === "seedream" ? seedream : chatgptManual;
       const image = await provider.generate(req, signal);
       return { ...image, providerId: provider.id };

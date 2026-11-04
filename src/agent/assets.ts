@@ -11,6 +11,7 @@ import { addImageCall } from "../usage/record.js";
 import { BudgetExceededError, budgetBlock } from "./budget.js";
 import { type Job, emit, reportUsage } from "./events.js";
 import type { GenerateInput } from "./schemas.js";
+import { msg } from "../i18n.js";
 
 export async function refImages(project: Project): Promise<ImageInput[]> {
   return Promise.all(project.refs.map(async (r) => ({ data: await readProjectFile(project.id, r.file), mime: r.mime })));
@@ -25,7 +26,7 @@ export async function generateAsset(
   // Check and reserve synchronously: parallel tool calls all reach this point before any finishes.
   const blocked = budgetBlock(job.budget, job.usage, job.imagesInFlight ?? 0);
   if (blocked) {
-    if (!job.budgetNoticed) emit(job, { type: "status", text: `${blocked}，不再生成新图` });
+    if (!job.budgetNoticed) emit(job, { type: "status", text: msg("run.budgetBlocked", { reason: blocked }) });
     job.budgetNoticed = true;
     throw new BudgetExceededError(blocked);
   }
@@ -70,7 +71,7 @@ async function generateReserved(job: Job, provider: ImageProvider, input: Genera
         onHandoff: (handoff) => emit(job, { type: "handoff", handoff }),
         onNotice: (text) => emit(job, { type: "status", text: `「${input.name}」${text}` }),
         onRetry: ({ attempt, delayMs, reason }) =>
-          emit(job, { type: "status", text: `「${input.name}」图像接口${reason.includes("429") ? "限流" : "出错"}（${reason}），${Math.ceil(delayMs / 1000)} 秒后第 ${attempt} 次重试` }),
+          emit(job, { type: "status", text: msg(reason.includes("429") ? "run.retryLimited" : "run.retryError", { name: input.name, reason, s: Math.ceil(delayMs / 1000), n: attempt }) }),
       },
       job.abort.signal,
     );
@@ -109,12 +110,13 @@ async function generateReserved(job: Job, provider: ImageProvider, input: Genera
     originalFile,
     parentId: input.replaces_asset_id,
   };
-  // A redraw keeps its predecessor's tags; tags given now are added.
-  const inherited = input.replaces_asset_id ? project.assets.find((a) => a.id === input.replaces_asset_id)?.tags : undefined;
+  // A redraw keeps its predecessor's tags (tags given now are added) and frame rate.
+  const predecessor = input.replaces_asset_id ? project.assets.find((a) => a.id === input.replaces_asset_id) : undefined;
+  const inherited = predecessor?.tags;
   const tags = normalizeTags([...(inherited ?? []), ...(input.tags ?? [])]);
   if (tags.length) asset.tags = tags;
   if (input.asset_type === "sprite_sheet") {
-    Object.assign(asset, await sliceAssetFrames(project.id, asset, img.data, input.frames).catch(() => ({})));
+    Object.assign(asset, await sliceAssetFrames(project.id, asset, img.data, input.frames, input.fps ?? predecessor?.fps ?? 8).catch(() => ({})));
   }
   if (project.styleGuide?.palette.length) {
     const r = await analyzePalette(img.data, project.styleGuide.palette.map((p) => p.hex)).catch(() => null);
@@ -123,7 +125,7 @@ async function generateReserved(job: Job, provider: ImageProvider, input: Genera
   await updateProject(project.id, (p) => {
     p.assets.push(asset);
   });
-  if (handoffId) await markHandoffImported(project.id, handoffId, asset.id).catch(() => emit(job, { type: "status", text: "素材已入库，接力状态记录更新失败，可在素材库中查看" }));
+  if (handoffId) await markHandoffImported(project.id, handoffId, asset.id).catch(() => emit(job, { type: "status", text: msg("run.handoffImportedNoteFailed") }));
   emit(job, { type: "asset", asset });
   return { asset, image: img };
 }

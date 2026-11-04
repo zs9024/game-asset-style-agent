@@ -6,6 +6,8 @@ import { readZip } from "../export/unzip.js";
 import { projectDir, newId, readJson, writeAtomic } from "./fs.js";
 import { isProjectFile, loadProject } from "./projects.js";
 import type { Asset, Project, RefImage, TrashedAsset } from "./types.js";
+import { msg } from "../i18n.js";
+import { NOTE_LOG_MAX } from "../domain/noteLog.js";
 
 export const BACKUP_FORMAT = "game-asset-agent/project-backup";
 const DATA_FILES = ["conversation.json", "usage.json", "style-history.json"] as const;
@@ -40,16 +42,22 @@ export async function importBackup(zip: Buffer, opts: { maxBytes?: number } = {}
   const entries = readZip(zip, { maxTotalBytes: opts.maxBytes ?? 2 * 1024 * 1024 * 1024 });
   const byName = new Map(entries.map((e) => [e.name, e.data]));
   const meta = parse(byName.get("backup-meta.json"));
-  if ((meta as { format?: string } | null)?.format !== BACKUP_FORMAT) throw new Error("不是本工具导出的项目备份");
+  if ((meta as { format?: string } | null)?.format !== BACKUP_FORMAT) throw new Error(msg("err.notBackup"));
   const src = parse(byName.get("project.json")) as Partial<Project> | null;
-  if (!src || !Array.isArray(src.refs) || !Array.isArray(src.assets)) throw new Error("备份中的 project.json 无效");
+  if (!src || !Array.isArray(src.refs) || !Array.isArray(src.assets)) throw new Error(msg("err.badBackupJson"));
 
   const skipped: string[] = [];
   const hasFile = (rel: unknown): rel is string => typeof rel === "string" && isProjectFile(rel) && byName.has(rel);
-  const refs = (src.refs as RefImage[]).filter((r) => hasFile(r?.file) || (skipped.push(`参考图 ${r?.id ?? "?"}`), false));
+  const refs = (src.refs as RefImage[]).filter((r) => hasFile(r?.file) || (skipped.push(msg("backup.ref", { id: r?.id ?? "?" })), false));
   // Every path an asset carries must point into the backup; drop optional ones that don't.
   const cleanAsset = <T extends Asset>(a: T): T => {
     const c = { ...a };
+    // Untrusted input: keep only well-formed note history entries.
+    if (c.noteLog !== undefined) {
+      const ok = Array.isArray(c.noteLog) ? c.noteLog.filter((n) => n && typeof n.at === "string" && typeof n.notes === "string" && (n.by === "user" || n.by === "agent")) : [];
+      if (ok.length) c.noteLog = ok.slice(-NOTE_LOG_MAX);
+      else delete c.noteLog;
+    }
     if (c.originalFile !== undefined && !hasFile(c.originalFile)) delete c.originalFile;
     if (c.gif !== undefined && !hasFile(c.gif)) delete c.gif;
     if (c.frames !== undefined && !(Array.isArray(c.frames) && c.frames.every(hasFile))) {
@@ -59,20 +67,21 @@ export async function importBackup(zip: Buffer, opts: { maxBytes?: number } = {}
     return c;
   };
   const assets = (src.assets as Asset[])
-    .filter((a) => hasFile(a?.file) || (skipped.push(`素材 ${a?.name ?? a?.id ?? "?"}`), false))
+    .filter((a) => hasFile(a?.file) || (skipped.push(msg("backup.asset", { name: a?.name ?? a?.id ?? "?" })), false))
     .map(cleanAsset);
   const trash = (Array.isArray(src.trash) ? (src.trash as TrashedAsset[]) : [])
     .filter((a) => hasFile(a?.file) && typeof a.deletedAt === "string")
     .map(cleanAsset);
   const styleGuide = src.styleGuide ? (StyleGuideInput.safeParse(src.styleGuide).data ?? null) : null;
-  if (src.styleGuide && !styleGuide) skipped.push("风格指南（格式无效）");
+  if (src.styleGuide && !styleGuide) skipped.push(msg("backup.badStyle"));
 
   const project: Project = {
     id: newId("prj"),
-    name: `${String(src.name ?? "导入的项目").slice(0, 70)}（恢复）`,
+    name: msg("project.restored", { name: String(src.name ?? msg("project.imported")).slice(0, 70) }),
     createdAt: new Date().toISOString(),
     refs,
     styleGuide,
+    ...(typeof src.conventions === "string" && src.conventions.trim() ? { conventions: src.conventions.trim().slice(0, 2000) } : {}),
     assets,
     ...(trash.length ? { trash } : {}),
   };

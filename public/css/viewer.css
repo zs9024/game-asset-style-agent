@@ -1,4 +1,4 @@
-/* Asset viewer dialog: review, sprite frames, cut-out, sizes, tile seams. */
+/* Asset viewer dialog: review, sprite frames, cut-out, sizes, tile seams, 9-slice. */
 
 dialog { border: 0; border-radius: 14px; padding: 0; max-width: min(1000px, 94vw); width: 100%; background: var(--panel); color: var(--ink); }
 dialog::backdrop { background: rgba(0,0,0,.55); }
@@ -15,17 +15,34 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 .viewer-left { min-width: 0; display: flex; flex-direction: column; }
 .viewer-img { display: flex; align-items: center; justify-content: center; min-height: 320px; flex: 1; }
 .viewer-img img { max-width: 100%; max-height: 75vh; display: block; }
+/* Zoomed: the image keeps its scaled size and the pane scrolls; pixels stay square. */
+.zoom-stage { position: relative; display: inline-block; line-height: 0; }
+.viewer-img:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.viewer-img.zoomed { overflow: auto; align-items: flex-start; justify-content: flex-start; max-height: 75vh; }
+.viewer-img.zoomed .zoom-stage { margin: auto; }
+.viewer-img.zoomed img { max-width: none; max-height: none; }
+.viewer-img img.crisp { image-rendering: pixelated; }
+.pixel-grid { position: absolute; inset: 0; pointer-events: none;
+  background-image: linear-gradient(to right, rgba(128,128,128,.45) 1px, transparent 1px), linear-gradient(to bottom, rgba(128,128,128,.45) 1px, transparent 1px); }
+.zoom-bar { display: flex; flex-wrap: wrap; gap: 2px 8px; justify-content: center; padding: 6px 8px; border-top: 1px solid var(--line); font-size: 12px; }
+.zoom-bar .btn.on { color: var(--ink); font-weight: 600; text-decoration: underline; }
 .viewer-meta { padding: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; overflow-y: auto; max-height: 80vh; }
 .viewer-meta pre { white-space: pre-wrap; background: var(--bg); padding: 10px; border-radius: 8px; font-size: 12px; margin: 0; }
 .viewer-meta .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .sprite { display: flex; flex-direction: column; gap: 8px; }
 .sprite-gif { display: flex; justify-content: center; border-radius: 8px; padding: 8px; }
 .sprite-gif img { max-height: 160px; image-rendering: pixelated; }
+.sprite-stage { position: relative; display: inline-block; line-height: 0; }
+.sprite-stage .onion { position: absolute; inset: 0; opacity: .3; pointer-events: none; }
+.sprite-stage .onion.prev { filter: sepia(1) hue-rotate(-50deg) saturate(3); }
+.sprite-stage .onion.next { filter: sepia(1) hue-rotate(160deg) saturate(3); }
+.sprite-stage .sprite-live { position: relative; }
+.sprite-controls { display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; font-size: 12px; }
 .frame-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 6px; }
 .frame-strip a { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid var(--line); overflow: hidden; }
 .frame-strip img { max-width: 100%; max-height: 100%; }
-.slice-form, .cutout-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.slice-form label, .cutout-form label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+.slice-form, .cutout-form, .outline-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.slice-form label, .cutout-form label, .outline-form label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
 .slice-form input { width: 56px; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .cutout-form input[type="range"] { width: 110px; accent-color: var(--accent); }
 .cutout-form output { min-width: 2ch; color: var(--ink); }
@@ -95,3 +112,49 @@ kbd { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px 5p
 .viewer-title .rename:hover { color: var(--accent); }
 .snap-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
 .snap-form select { padding: 3px 6px; font-size: 12px; }
+.nine { display: grid; gap: 8px; }
+.nine-src { position: relative; justify-self: start; max-width: 100%; border-radius: 8px; border: 1px solid var(--line); line-height: 0; }
+.nine-src img { max-width: 100%; max-height: 180px; display: block; }
+.nine-line { position: absolute; pointer-events: none; border: 0 dashed var(--accent); }
+.nine-line.left, .nine-line.right { top: 0; bottom: 0; border-left-width: 1px; }
+.nine-line.top, .nine-line.bottom { left: 0; right: 0; border-top-width: 1px; }
+.nine-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.nine-form label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+.nine-form input { width: 64px; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.nine-error { margin: 0; font-size: 12px; color: var(--bad); }
+.nine-previews { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.nine-previews figure { margin: 0; display: grid; gap: 4px; justify-items: center; font-size: 12px; }
+.nine-box { box-sizing: border-box; border-style: solid; border-color: transparent; border-image-repeat: stretch; }
+.outline-form select { padding: 3px 6px; font-size: 12px; }
+.outline-form input[type="color"] { width: 32px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; }
+.recolor { display: grid; gap: 6px; }
+.recolor-rows { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.recolor-row { display: flex; gap: 4px; align-items: center; font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; }
+.recolor-row .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--line); display: inline-block; }
+.recolor-row input[type="color"] { width: 28px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; }
+.recolor-opts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; margin-top: 6px; }
+.recolor-opts label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+.recolor-opts input[name="name"] { width: 140px; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+.recolor-opts select { padding: 3px 6px; font-size: 12px; }
+.action-set { display: grid; gap: 6px; }
+.action-list { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; }
+.action-list label { display: flex; gap: 4px; align-items: center; }
+.action-set > .btn { justify-self: start; }
+.action-set .sizes-head { flex-wrap: wrap; justify-content: flex-start; gap: 2px 8px; }
+.action-set .sizes-head b { white-space: nowrap; }
+.action-set .sizes-head .muted { font-size: 12px; }
+.similar-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.similar-item { position: relative; width: 56px; height: 56px; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; }
+.similar-item.related { border-style: dashed; }
+.similar-item img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
+.similar-item span { position: absolute; right: 2px; bottom: 2px; padding: 0 4px; border-radius: 4px; background: var(--ink); color: var(--bg); font-size: 10px; line-height: 14px; pointer-events: none; }
+.note-log summary { cursor: pointer; }
+.note-log ol { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; font-size: 12px; }
+.note-log li { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-left: 2px solid var(--line); }
+.version-log summary { cursor: pointer; }
+.version-log ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.version-log li { display: grid; grid-template-columns: 44px 1fr; gap: 8px; align-items: start; padding: 6px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.version-log li.here { border-color: var(--accent); }
+.version-log li > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.version-thumb { width: 44px; height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: zoom-in; }
+.version-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
