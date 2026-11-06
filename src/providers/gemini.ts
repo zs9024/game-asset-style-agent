@@ -9,6 +9,8 @@ export const gemini: ImageProvider = {
   async generate(req, signal) {
     const model = process.env.GEMINI_IMAGE_MODEL ?? "gemini-2.5-flash-image";
     const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY!;
+    // Relay stations expose the same v1beta shape on their own host.
+    const base = (process.env.GEMINI_BASE_URL?.trim() || "https://generativelanguage.googleapis.com").replace(/\/+$/, "");
     const aspectRatio = { square: "1:1", landscape: "3:2", portrait: "2:3" }[req.aspect];
     // Gemini can't output alpha: ask for a flat white backdrop that the cut-out step removes.
     const text = req.transparent
@@ -19,7 +21,7 @@ export const gemini: ImageProvider = {
       { text },
     ];
     const res = await fetchWithRetry(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      `${base}/v1beta/models/${model}:generateContent`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
@@ -32,15 +34,15 @@ export const gemini: ImageProvider = {
       { onRetry: req.onRetry },
     );
     await failOnHttpError(res, "Gemini");
-    const json = (await res.json()) as {
-      candidates?: { content?: { parts?: { inlineData?: { mimeType: string; data: string }; text?: string }[] } }[];
-    };
+    type Part = { inlineData?: { mimeType?: string; mime_type?: string; data: string }; inline_data?: { mimeType?: string; mime_type?: string; data: string }; text?: string };
+    const json = (await res.json()) as { candidates?: { content?: { parts?: Part[] } }[] };
     const outParts = json.candidates?.[0]?.content?.parts ?? [];
-    const img = outParts.find((p) => p.inlineData)?.inlineData;
+    const found = outParts.find((p) => p.inlineData || p.inline_data);
+    const img = found?.inlineData ?? found?.inline_data;
     if (!img) {
       const said = outParts.map((p) => p.text).filter(Boolean).join(" ");
       throw new Error(`Gemini returned no image${said ? `: ${said.slice(0, 300)}` : ""}`);
     }
-    return { data: Buffer.from(img.data, "base64"), mime: img.mimeType };
+    return { data: Buffer.from(img.data, "base64"), mime: img.mimeType ?? img.mime_type ?? "image/png" };
   },
 };

@@ -64,6 +64,7 @@ describe("getProvider", () => {
 
   it("falls back to the first available provider", () => {
     delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_IMAGE_API_KEY;
     delete process.env.GEMINI_API_KEY;
     delete process.env.GOOGLE_API_KEY;
     delete process.env.SD_WEBUI_URL;
@@ -79,6 +80,7 @@ describe("getProvider", () => {
 
   it("refuses a named provider without a key", () => {
     delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_IMAGE_API_KEY;
     assert.throws(() => getProvider("openai"), /未配置/);
   });
 

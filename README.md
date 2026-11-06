@@ -187,6 +187,39 @@ SEEDREAM_RESPONSE_FORMAT=b64_json
 
 用量按 `seedream` 通道累计，可配置 `IMAGE_PRICE_SEEDREAM`（美元/张）估算费用；留空则只统计次数，费用显示未知且不计入美元预算。不要直接填人民币单价；参考图数量、分辨率等带来的实际费用以方舟账单为准。方舟 key 仅保存在服务端环境配置中，不需要在聊天或前端填写。
 
+### 使用中转站出图（OpenAI / Gemini 兼容）
+
+图像模型需要走中转站（而不是直连官方）时，不需要改代码：OpenAI images 协议和 Gemini 原生协议都支持自定义地址与独立 key。
+
+**OpenAI images 协议**（`/v1/images/generations` 和 `/v1/images/edits`，支持参考图）：
+
+```dotenv
+IMAGE_PROVIDER=openai
+OPENAI_IMAGE_API_KEY=sk-中转站密钥
+OPENAI_IMAGE_BASE_URL=https://api.pinaic.com/v1
+OPENAI_IMAGE_MODEL=gpt-image-2.5-flare
+```
+
+`OPENAI_IMAGE_API_KEY` / `OPENAI_IMAGE_BASE_URL` 只作用于图像通道；留空时分别回退到 `OPENAI_API_KEY` / `OPENAI_BASE_URL`，因此可以同时保留 GPT Agent 使用的官方 key。请求体里的 `background`、`size` 以及参考图的 multipart 上传按官方格式发送，中转站需兼容这些字段；模型名以中转站 `/v1/models` 返回的为准。
+
+**Gemini 原生协议**（`/v1beta/models/<model>:generateContent`，参考图放在 `inline_data`）：
+
+```dotenv
+IMAGE_PROVIDER=gemini
+GEMINI_API_KEY=sk-中转站密钥
+GEMINI_BASE_URL=https://api.pinaic.com
+GEMINI_IMAGE_MODEL=gemini-3.1-flash-image
+```
+
+`GEMINI_BASE_URL` 只填主机地址，不要带 `/v1beta`；留空使用官方 `https://generativelanguage.googleapis.com`。横竖比例会映射为 `1:1` / `3:2` / `2:3`，返回的 JPEG/PNG 由服务端统一转存。
+
+注意：
+
+- 同时配置了 OpenAI 和 Gemini 通道时，用 `IMAGE_PROVIDER` 明确默认通道，否则按内置顺序选择第一个可用的通道。
+- 中转站通常比官方慢（单张约 1–3 分钟）；429 / 5xx 仍按 `IMAGE_MAX_RETRIES` 指数退避重试，超时或停止沿用原任务的中止逻辑。
+- 费用估算仍使用 `IMAGE_PRICE_OPENAI`（美元/张），留空则只统计调用次数；实际账单以中转站为准。
+- 想先确认某个 key 所属分组和模型是否可用，可运行独立的 `node tools/test-image-api.mjs --key sk-xxx`（见 `--help`）。
+
 ### 演示模式
 
 没有任何 key 时可先体验界面：

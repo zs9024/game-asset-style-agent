@@ -37,7 +37,7 @@ afterEach(() => { process.env = { ...savedEnv }; globalThis.fetch = realFetch; }
 
 describe("Seedream Flash image provider", () => {
   it("is available with only the Ark key and uses the exact Flash model by default", async () => {
-    delete process.env.OPENAI_API_KEY; delete process.env.GEMINI_API_KEY; delete process.env.GOOGLE_API_KEY; delete process.env.SD_WEBUI_URL;
+    delete process.env.OPENAI_API_KEY; delete process.env.OPENAI_IMAGE_API_KEY; delete process.env.GEMINI_API_KEY; delete process.env.GOOGLE_API_KEY; delete process.env.SD_WEBUI_URL;
     assert.equal(seedream.available(), true);
     assert.equal(getProvider(undefined).id, "seedream");
     stub(ok);

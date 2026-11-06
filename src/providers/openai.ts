@@ -5,12 +5,14 @@ import { type ImageProvider, failOnHttpError } from "./types.js";
 export const openai: ImageProvider = {
   id: "openai",
   label: "OpenAI gpt-image",
-  available: () => !!process.env.OPENAI_API_KEY,
+  // A relay can use its own key without taking over the GPT agent's OPENAI_API_KEY.
+  available: () => !!(process.env.OPENAI_IMAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim()),
   async generate(req, signal) {
     const size = { square: "1024x1024", landscape: "1536x1024", portrait: "1024x1536" }[req.aspect];
     const model = process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2.5-flare";
-    const base = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
-    const auth = { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` };
+    const base = (process.env.OPENAI_IMAGE_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
+    const key = process.env.OPENAI_IMAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY;
+    const auth = { Authorization: `Bearer ${key}` };
     const background = req.transparent ? "transparent" : "opaque";
     let res: Response;
     if (req.references.length) {

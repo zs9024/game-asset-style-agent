@@ -37,8 +37,11 @@ const jsonResponse = (body: unknown, status = 200) =>
 
 beforeEach(() => {
   process.env = { ...savedEnv, OPENAI_API_KEY: "sk-test", GEMINI_API_KEY: "g-test", IMAGE_MAX_RETRIES: "0" };
+  delete process.env.OPENAI_IMAGE_API_KEY;
+  delete process.env.OPENAI_IMAGE_BASE_URL;
   delete process.env.OPENAI_BASE_URL;
   delete process.env.OPENAI_IMAGE_MODEL;
+  delete process.env.GEMINI_BASE_URL;
   delete process.env.GEMINI_IMAGE_MODEL;
   for (const k of Object.keys(process.env)) if (k.startsWith("SD_")) delete process.env[k];
 });
@@ -48,10 +51,12 @@ afterEach(() => {
 });
 
 describe("OpenAI provider", () => {
-  it("is available only with a key", () => {
+  it("is available with either the image key or the shared OpenAI key", () => {
     assert.equal(openai.available(), true);
     delete process.env.OPENAI_API_KEY;
     assert.equal(openai.available(), false);
+    process.env.OPENAI_IMAGE_API_KEY = "sk-image";
+    assert.equal(openai.available(), true);
   });
 
   it("sends references to images/edits as multipart, capped at 16", async () => {
@@ -79,6 +84,16 @@ describe("OpenAI provider", () => {
     assert.equal(url, "https://proxy.example/v1/images/generations");
     const body = JSON.parse(String(init.body));
     assert.deepEqual(body, { model: "gpt-image-2", prompt: "A sword icon", size: "1024x1536", n: 1, background: "opaque" });
+  });
+
+  it("prefers a relay image key and base URL over the shared OpenAI settings", async () => {
+    stubFetch(() => jsonResponse({ data: [{ b64_json: PNG_B64 }] }));
+    process.env.OPENAI_IMAGE_API_KEY = "sk-relay";
+    process.env.OPENAI_IMAGE_BASE_URL = "https://relay.example/v1/";
+    await openai.generate(req());
+    const { url, init } = calls[0];
+    assert.equal(url, "https://relay.example/v1/images/generations");
+    assert.equal((init.headers as Record<string, string>).Authorization, "Bearer sk-relay");
   });
 
   it("passes the abort signal through", async () => {
@@ -116,6 +131,16 @@ describe("Gemini provider", () => {
     assert.equal(gemini.available(), false);
     process.env.GOOGLE_API_KEY = "k";
     assert.equal(gemini.available(), true);
+  });
+
+  it("uses GEMINI_BASE_URL and accepts snake_case relay responses", async () => {
+    process.env.GEMINI_BASE_URL = "https://relay.example/";
+    stubFetch(() => jsonResponse({ candidates: [{ content: { parts: [{ inline_data: { mime_type: "image/jpeg", data: PNG_B64 } }] } }] }));
+    const out = await gemini.generate(req());
+    assert.equal(out.mime, "image/jpeg");
+    assert.equal(out.data.toString(), "fake-png");
+    assert.equal(calls[0].url, "https://relay.example/v1beta/models/gemini-2.5-flash-image:generateContent");
+    assert.equal((calls[0].init.headers as Record<string, string>)["x-goog-api-key"], "g-test");
   });
 
   it("sends inline references (max 14), aspect ratio and the key header", async () => {

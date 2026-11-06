@@ -129,6 +129,39 @@ The provider sends JSON requests with inline Base64 references to `/images/gener
 
 Native transparency requires a single alpha reference, while project references are flattened JPEGs. Cutout assets therefore use a flat white backdrop and the existing local background-removal step; originals remain available. Visible watermarks are disabled by default and can be enabled with `SEEDREAM_WATERMARK=true`. Set `IMAGE_PRICE_SEEDREAM` in USD per generated image for cost estimates; leave it blank to track calls with unknown cost, excluded from the dollar budget. Convert RMB prices before entering them. Actual resolution/reference-related charges follow the Ark bill. Keep `ARK_API_KEY` in the server environment, never in frontend code or chat.
 
+### Generate images through a relay (OpenAI / Gemini compatible)
+
+To use image models behind a relay instead of the official endpoints, no code change is needed: both the OpenAI images protocol and the Gemini native protocol accept a custom base URL and their own key.
+
+**OpenAI images protocol** (`/v1/images/generations` and `/v1/images/edits`, references supported):
+
+```dotenv
+IMAGE_PROVIDER=openai
+OPENAI_IMAGE_API_KEY=sk-relay-key
+OPENAI_IMAGE_BASE_URL=https://api.pinaic.com/v1
+OPENAI_IMAGE_MODEL=gpt-image-2.5-flare
+```
+
+`OPENAI_IMAGE_API_KEY` / `OPENAI_IMAGE_BASE_URL` apply to the image channel only; when empty they fall back to `OPENAI_API_KEY` / `OPENAI_BASE_URL`, so the official key used by the GPT agent can stay separate. Requests keep the official shape (`background`, `size`, multipart references), and the relay must accept those fields. The model name must appear in the relay's `/v1/models`.
+
+**Gemini native protocol** (`/v1beta/models/<model>:generateContent`, references sent as `inline_data`):
+
+```dotenv
+IMAGE_PROVIDER=gemini
+GEMINI_API_KEY=sk-relay-key
+GEMINI_BASE_URL=https://api.pinaic.com
+GEMINI_IMAGE_MODEL=gemini-3.1-flash-image
+```
+
+`GEMINI_BASE_URL` is the host only — do not append `/v1beta`; leave it empty for the official `https://generativelanguage.googleapis.com`. Aspect ratios map to `1:1`, `3:2` and `2:3`; returned JPEG/PNG data is stored by the existing pipeline.
+
+Notes:
+
+- With both channels configured, set `IMAGE_PROVIDER` explicitly; otherwise the first available provider in the built-in order is selected.
+- Relays are usually slower (roughly 1–3 minutes per image). 429 / 5xx responses still use `IMAGE_MAX_RETRIES` with exponential backoff, and the job's stop button still aborts the request.
+- Cost estimates still use `IMAGE_PRICE_OPENAI` (USD per image); leave it blank to track calls without a dollar estimate. The relay's own bill remains authoritative.
+- To check which image models a key/group can use first, run the standalone `node tools/test-image-api.mjs --key sk-xxx` (see `--help`).
+
 ## Deployment
 
 ### Docker
