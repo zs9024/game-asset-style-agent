@@ -68,6 +68,8 @@ describe("Codex subscription image bridge", () => {
     assert.ok(start.args.includes('forced_login_method="chatgpt"'));
     assert.ok(start.args.includes("--ignore-user-config"));
     assert.ok(start.args.includes("workspace-write"));
+    // The default Windows sandbox blocks the worker's copy into asset.png.
+    assert.equal(start.args.includes('windows.sandbox="unelevated"'), process.platform === "win32");
     assert.ok(start.args.includes("image_generation"));
     assert.ok(start.args.includes("--image"));
     assert.ok(start.args.includes("gpt-6.1-sol"));

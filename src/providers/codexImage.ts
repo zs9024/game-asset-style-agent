@@ -117,6 +117,10 @@ async function generateBuiltIn(req: GenerateRequest, signal?: AbortSignal): Prom
     const args = ["exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "workspace-write", ...forcedLogin,
       "-c", 'model_provider="openai"', "-c", 'approval_policy="never"', "-c", `developer_instructions=${JSON.stringify(developer)}`,
       "--enable", "image_generation", "--disable", "multi_agent", "--json", "--color", "never", "-C", cwd];
+    // Codex's default Windows sandbox rejects every command the worker shells out to, including
+    // the copy of the generated image into asset.png. --ignore-user-config also drops the user's
+    // [windows] sandbox setting, so pick the unelevated sandbox explicitly.
+    if (process.platform === "win32") args.push("-c", 'windows.sandbox="unelevated"');
     if (process.env.CODEX_IMAGE_AGENT_MODEL?.trim()) args.push("--model", process.env.CODEX_IMAGE_AGENT_MODEL.trim());
     for (const file of references) args.push("--image", file);
     args.push("-");

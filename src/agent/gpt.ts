@@ -11,6 +11,7 @@ import { prepareRun } from "./prepare.js";
 import { SYSTEM } from "./prompts.js";
 import { errResult, runTool } from "./runTool.js";
 import { tools } from "./tools.js";
+import { GptOutput } from "./gptOutput.js";
 
 const NAMESPACE = "game_assets";
 type ImageOrText = Anthropic.Beta.BetaTextBlockParam | Anthropic.Beta.BetaImageBlockParam;
@@ -55,6 +56,7 @@ export async function runGptAgent(job: Job, opts: RunOptions) {
   }];
   emit(job, { type: "status", text: subscription ? msg("run.gptSubscription") : msg("run.gptApiBilling") });
   reportUsage(job);
+  let commentaryTurns = 0;
   for (let turn = 0; turn < config.maxTurns; turn++) {
     job.abort.signal.throwIfAborted();
     if (pastHardStop(job.budget, job.usage)) {
@@ -71,7 +73,9 @@ export async function runGptAgent(job: Job, opts: RunOptions) {
         tools: tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.input_schema, strict: false })) }],
     }, { signal: job.abort.signal });
     let response: GptResponse | undefined;
+    const collected = new GptOutput();
     for await (const event of stream) {
+      collected.observe(event);
       if (event.type === "response.output_text.delta") emit(job, { type: "text", delta: event.delta });
       if (event.type === "response.reasoning_summary_text.done") emit(job, { type: "thinking", text: event.text });
       if (event.type === "error") throw new Error(msg("err.gptStream", { code: event.code ?? "unknown_error", message: event.message }));
@@ -84,14 +88,23 @@ export async function runGptAgent(job: Job, opts: RunOptions) {
     job.abort.signal.throwIfAborted();
     if (!response || response.status !== "completed") throw new Error(msg("err.gptInterrupted"));
     reportTokens(job, response);
-    if (response.output.some((item) => item.type === "message" && item.content.some((b) => b.type === "refusal"))) throw new Error(msg("err.gptRefusal"));
+    const output = collected.finish(response.output ?? []);
+    if (output.some((item) => item.type === "message" && item.content.some((b) => b.type === "refusal"))) throw new Error(msg("err.gptRefusal"));
     // Preserve encrypted reasoning and all tool-call metadata unchanged across turns/runs.
-    input.push(...response.output as ResponseInputItem[]);
-    const calls = response.output.filter((item): item is ResponseFunctionToolCall => item.type === "function_call");
+    input.push(...output as ResponseInputItem[]);
+    const calls = output.filter((item): item is ResponseFunctionToolCall => item.type === "function_call");
     if (!calls.length) {
+      const lastMessage = output.filter((item) => item.type === "message").at(-1);
+      if (!lastMessage || lastMessage.phase === "commentary") {
+        commentaryTurns++;
+        if (commentaryTurns >= 3 || turn + 1 >= config.maxTurns) throw new Error(msg("err.gptOnlyCommentary"));
+        emit(job, { type: "status", text: msg("run.gptContinueCommentary") });
+        continue;
+      }
       await prepared.persist(input);
       return;
     }
+    commentaryTurns = 0;
     const outputs = await Promise.all(calls.map(async (call): Promise<ResponseInputItem> => {
       let args: unknown;
       try { args = JSON.parse(call.arguments); } catch { args = call.arguments; }

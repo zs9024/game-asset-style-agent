@@ -89,6 +89,16 @@ async function fixture() {
 }
 
 describe("official ChatGPT subscription OAuth", () => {
+  it("explains a pre-authorization discovery 403 and never substitutes unverified metadata", async () => {
+    const directory = path.join(dataDir, crypto.randomUUID());
+    const auth = new ChatGPTAuth({ directory: () => directory, fetch: async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get("Accept"), "application/json");
+      return new Response("<html>denied</html>", { status: 403, headers: { server: "cloudflare", "content-type": "text/html" } });
+    } });
+    services.push(auth);
+    await assert.rejects(auth.startLogin(), /HTTP 403.*HTTP_PROXY \/ HTTPS_PROXY/);
+    assert.equal((await auth.status()).connected, false);
+  });
   it("registers with PKCE, rejects forged state, validates identity and never exposes tokens in status", async () => {
     const f = await fixture();
     const attempt = await f.start();

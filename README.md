@@ -90,6 +90,18 @@ GPT_MODEL=gpt-6.1-sol
 
 去掉 `AGENT_MODE=demo`，启动项目后从本机直接打开 `http://127.0.0.1:5173`，在需求面板点击 **Continue with ChatGPT**，在新窗口登录并授权订阅用量。可以添加/选择多个 ChatGPT 账号或工作区；点击「查看可用模型」获取当前账号的模型列表，将对应 id 填入 `GPT_MODEL` 后重启。
 
+如果浏览器能打开 OpenAI 登录页，但点击按钮报「无法获取 OpenAI 登录配置（HTTP 403）」，需要检查 **Node 后端**的出站网络。Node 不自动继承 Windows/v2rayN 的系统代理；在 `.env` 中填写客户端实际的 HTTP/Mixed 监听地址，例如：
+
+```dotenv
+HTTP_PROXY=http://127.0.0.1:10808
+HTTPS_PROXY=http://127.0.0.1:10808
+NO_PROXY=localhost,127.0.0.1,::1
+```
+
+重启 `npm start` / `npm run dev` 后生效。程序在读取 `.env` 后调用 `http.setGlobalProxyFromEnv`，覆盖 OAuth 发现、公钥、令牌交换/续期以及 GPT SDK 请求；需使用提供此 API 的 Node 版本（本机 Node 24.15.0 已验证）。HTTP 与 HTTPS 目标都填写代理客户端提供的 `http://` 地址，不是 SOCKS 地址。所有 Node 出站请求会使用这些设置，本机页面和 OAuth 回调始终绕过代理。浏览器侧仍使用它自己的代理配置；代码不会关闭 TLS/身份签名验证，也不会在 403 时改用未验证的登录配置。
+
+cc-switch 的授权中心与本项目的 OAuth 注册分别管理。现有 `codex_image` 通道通过本机 CLI 复用 Codex 登录，无需再次点击页面授权；Agent 的 `GPT_AUTH_MODE=chatgpt` 则仍需本项目单独授权。若要让 Agent 也复用 CLI 登录，应接入官方 Codex app-server/CLI，而非把 cc-switch/Codex 的 refresh token 复制到本项目登录文件中。
+
 也可以在本机终端运行 `npm run chatgpt:login`，打开命令打印的登录地址完成授权；`npm run chatgpt:login -- --new` 添加账号，`-- --account oaiapp_…` 重新登录已有账号。此流程使用项目自己的官方 OAuth（PKCE、身份签名校验、令牌续期），无需提取或复制 Codex 的登录凭证。订阅模式固定使用官方 Responses API，忽略 `GPT_BASE_URL`，且不会在额度不足或授权失效时自动改用 API key。
 
 订阅登录适用于官方支持的开源/本地运行场景，账号资格、可用模型与额度由 OpenAI 决定，并非无限使用；Plus 的用量限制会与其他使用该订阅的应用共享。参见 [官方订阅接入](https://developers.openai.com/siwc/token-sharing-open-source)、[当前限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。实际生成图片仍通过独立的 Seedream / OpenAI / Gemini / 本地 SD / Mock 通道；订阅登录令牌只用于 Agent 看图和规划，不会作为图像通道的 key。

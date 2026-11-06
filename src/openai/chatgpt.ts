@@ -38,7 +38,9 @@ export class ChatGPTAuth {
   private directory() { return this.options.directory?.() ?? path.join(config.dataDir, "auth"); }
   private file() { return path.join(this.directory(), "chatgpt.json"); }
   private fetch(url: string, init: RequestInit = {}) {
-    return (this.options.fetch ?? globalThis.fetch)(url, { ...init, signal: init.signal ?? AbortSignal.timeout(30_000), redirect: "error" });
+    const headers = new Headers(init.headers);
+    if (!headers.has("Accept")) headers.set("Accept", "application/json");
+    return (this.options.fetch ?? globalThis.fetch)(url, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(30_000), redirect: "error" });
   }
   private async load(): Promise<AuthStore> {
     try {
@@ -61,6 +63,7 @@ export class ChatGPTAuth {
   private async discovery() {
     if (!this.metadata) {
       const res = await this.fetch(`${ISSUER}/.well-known/openid-configuration`);
+      if (res.status === 403) throw new Error(msg("err.chatgptConfigBlocked"));
       if (!res.ok) throw new Error(msg("err.chatgptConfigFetch", { status: res.status }));
       const metadata = await res.json() as Discovery;
       if (metadata.issuer !== ISSUER || [metadata.authorization_endpoint, metadata.token_endpoint, metadata.jwks_uri, metadata.revocation_endpoint]

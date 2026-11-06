@@ -11,7 +11,7 @@ import { solidPng, useTempDataDir, validStyleGuide } from "./helpers.js";
 const dataDir = useTempDataDir();
 const originalFetch = globalThis.fetch;
 type Recorded = { url: string; headers: Headers; body: { input: ResponseInputItem[]; [key: string]: unknown } };
-type Turn = { output?: unknown[]; status?: string; code?: string; httpStatus?: number; truncate?: boolean; usage?: unknown; summary?: string };
+type Turn = { output?: unknown[]; terminalOutput?: unknown[]; streamedOutput?: unknown[]; extraEvents?: object[]; status?: string; code?: string; httpStatus?: number; truncate?: boolean; usage?: unknown; summary?: string };
 const requests: Recorded[] = [];
 const script: (Turn | ((req: Recorded) => Turn | Promise<Turn>))[] = [];
 const events = (data: object) => `data: ${JSON.stringify(data)}\n\n`;
@@ -56,9 +56,13 @@ beforeEach(async () => {
         body += events({ type: "response.output_text.delta", delta: part.text });
       }
     }
+    for (const [index, item] of (turn.streamedOutput ?? output).entries()) {
+      body += events({ type: "response.output_item.done", output_index: index, item });
+    }
+    for (const event of turn.extraEvents ?? []) body += events(event);
     if (turn.summary) body += events({ type: "response.reasoning_summary_text.done", text: turn.summary });
     if (!turn.truncate) body += events({ type: `response.${turn.status ?? "completed"}`, response: {
-      id: "resp_test", model: process.env.GPT_MODEL, status: turn.status ?? "completed", output, usage: turn.usage ?? tokens,
+      id: "resp_test", model: process.env.GPT_MODEL, status: turn.status ?? "completed", output: turn.terminalOutput ?? output, usage: turn.usage ?? tokens,
       error: turn.code ? { code: turn.code, message: turn.code } : null,
       incomplete_details: turn.status === "incomplete" ? { reason: "max_output_tokens" } : null,
     } });
@@ -79,6 +83,79 @@ function run(projectId: string, extra = {}) {
 const errors = (job: { events: AgentEvent[] }) => job.events.filter((e) => e.type === "error");
 
 describe("GPT Responses agent in both billing modes", () => {
+  it("continues commentary and executes tools recovered from empty terminal outputs", async () => {
+    process.env.GPT_AUTH_MODE = "chatgpt";
+    const id = await project();
+    const preamble = { ...say("我会生成一张夜晚下雨环境的图。"), phase: "commentary" };
+    script.push(
+      { output: [reasoning, preamble], terminalOutput: [] },
+      (req) => {
+        assert.deepEqual(req.body.input.at(-1), preamble, "the exact commentary phase must be replayed");
+        return { output: [call("style_sparse", "save_style_guide", validStyleGuide())], terminalOutput: [] };
+      },
+      { output: [call("gen_sparse", "generate_image", { name: "雨夜", asset_type: "background", prompt: "A cozy treehouse in a rainy night, indigo moonlight, warm amber lanterns", aspect: "portrait", transparent_background: false })], terminalOutput: [] },
+      (req) => {
+        const result = JSON.stringify(req.body.input.at(-1));
+        const assetId = /asset_id=(ast_[\da-f]+)/.exec(result)![1];
+        assert.match(result, /input_image/);
+        return { output: [call("review_sparse", "review_asset", { asset_id: assetId, verdict: "approved", consistency_score: 9, notes: "雨夜风格一致" })], terminalOutput: [] };
+      },
+      { output: [{ ...say("已生成并审核雨夜环境图。"), phase: "final_answer" }], terminalOutput: [] },
+    );
+    const job = await run(id, { request: "继续生成一张夜晚下雨环境的图" });
+    assert.deepEqual(errors(job), []);
+    assert.equal(requests.length, 5);
+    assert.equal(job.usage.images.calls, 1);
+    assert.equal((await store.loadProject(id)).assets[0].status, "approved");
+    const history = (await store.loadConversation(id))!;
+    assert.ok(history.messages.some((item) => (item as { phase?: string }).phase === "commentary"));
+    assert.equal((history.messages.at(-1) as { phase: string }).phase, "final_answer");
+    assert.ok(job.events.some((event) => event.type === "status" && /执行说明/.test(event.text)));
+  });
+
+  it("continues a full commentary-only response and allows a genuine informational final answer", async () => {
+    const id = await project();
+    script.push({ output: [{ ...say("我先分析配色。"), phase: "commentary" }] }, { output: [{ ...say("参考图主要采用柔和的绿与暖棕。"), phase: "final_answer" }] });
+    const job = await run(id, { request: "只解释参考图配色，不生成图片", assetTypes: [] });
+    assert.deepEqual(errors(job), []);
+    assert.equal(requests.length, 2);
+    assert.equal(job.usage.images.calls, 0);
+  });
+
+  it("bounds commentary-only continuations and does not mark an unexecuted plan as success", async () => {
+    const id = await project();
+    script.push(...Array.from({ length: 3 }, () => ({ output: [{ ...say("我会继续生成。"), phase: "commentary" }] })));
+    const job = await run(id);
+    assert.equal(job.usage.status, "error");
+    assert.equal(job.usage.claude.requests, 3);
+    assert.equal(job.usage.images.calls, 0);
+    assert.match((errors(job)[0] as { message: string }).message, /不会将计划当作生成成功/);
+    assert.equal(await store.loadConversation(id), null);
+  });
+
+  it("reports delta-only/empty outputs as incomplete rather than saving user-only history", async () => {
+    const id = await project();
+    script.push({ output: [say("我会生成。")], streamedOutput: [], terminalOutput: [] });
+    const job = await run(id);
+    assert.equal(job.usage.status, "error");
+    assert.match((errors(job)[0] as { message: string }).message, /没有可确认的输出/);
+    assert.equal(await store.loadConversation(id), null);
+    assert.equal(job.usage.images.calls, 0);
+  });
+
+  it("never executes conflicting or duplicate function calls even after a completed stream", async () => {
+    const gen = call("conflict", "generate_image", { name: "木剑", asset_type: "item_icon", prompt: "A wooden sword icon with simple outlines", aspect: "square", transparent_background: true });
+    for (const output of [[{ ...gen, arguments: "{}" }], [{ ...gen, id: "different_id" }, gen]]) {
+      const id = await project();
+      script.push(output.length === 1 ? { output, streamedOutput: [gen] } : { output });
+      const job = await run(id);
+      assert.equal(job.usage.status, "error");
+      assert.match((errors(job)[0] as { message: string }).message, /不完整或互相冲突/);
+      assert.equal(job.usage.images.calls, 0);
+      assert.equal((await store.loadProject(id)).assets.length, 0);
+    }
+  });
+
   it("runs vision → style → image → visual review; streams text and persists encrypted reasoning", async () => {
     const id = await project();
     script.push(

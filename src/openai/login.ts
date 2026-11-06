@@ -1,9 +1,11 @@
 import "dotenv/config";
 import { msg } from "../i18n.js";
 import { chatGPTAuth } from "./chatgpt.js";
+import { configureProxyFromEnv } from "../network/proxy.js";
 
 // Run locally before copying the protected auth directory to a self-hosted instance.
 try {
+  configureProxyFromEnv();
   const args = process.argv.slice(2);
   if (args.length && !(args.length === 1 && args[0] === "--new") && !(args.length === 2 && args[0] === "--account")) {
     throw new Error(msg("usage.chatgptLogin"));
