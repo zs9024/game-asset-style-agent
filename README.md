@@ -9,8 +9,8 @@
 ![flow](https://img.shields.io/badge/flow-参考图→风格指南→规划→生成→审核→重画-e2562b)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png" />
-  <img alt="Game Asset Agent 主界面：风格参考与风格指南、需求与 Agent 日志、素材库" src="docs/screenshots/main-light.png" />
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/zhihu/2095645683881662145-03.jpg" />
+  <img alt="Game Asset Agent 主界面：风格参考与风格指南、需求与 Agent 日志、素材库" src="docs/images/zhihu/2095645683881662145-01.jpg" />
 </picture>
 
 <sub>截图为演示模式（`AGENT_MODE=demo`），素材是离线 Mock 占位图；接入 Agent 与图像模型后为真实生成结果。</sub>
@@ -35,7 +35,7 @@
 - ⚡ 并行生成、SSE 实时日志（含思考摘要）、可随时停止、刷新页面自动续接任务、后台完成提醒、查看器快捷键
 - 🔌 图像模型可插拔：OpenAI GPT Image 2.5 Flare / Sunburst（API）、Google Gemini Image、火山方舟 Doubao Seedream 5.0 Flash（最多 10 张参考图）、本地 Stable Diffusion WebUI、Codex 内置订阅生图、ChatGPT 人工接力、离线 Mock
 
-<img alt="素材查看器：审核与按意见重画、色板一致性、精灵帧抖动检测与对齐、游戏尺寸" src="docs/screenshots/viewer.png" />
+<img alt="素材查看器：审核与按意见重画、色板一致性、精灵帧抖动检测与对齐、游戏尺寸" src="docs/images/zhihu/2095645683881662145-02.jpg" />
 
 ## 快速开始
 
@@ -347,3 +347,6 @@ Claude 默认模型 `claude-opus-5-5`（adaptive thinking，effort 可通过 `CL
 ## License
 
 MIT
+
+
+截图来源：[知乎项目介绍](https://zhuanlan.zhihu.com/p/2095645683881662145)。
