@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { jobs } from "../agent/events.js";
 import { msg } from "../i18n.js";
 import { chatGPTAuth } from "../openai/chatgpt.js";
@@ -9,9 +9,8 @@ function stopSubscriptionJobs() {
   for (const job of jobs.values()) if (!job.finished && job.usage.agent?.authMode === "chatgpt") job.abort.abort();
 }
 
-// This connector controls local credentials. Forwarded/public requests must not manage them.
-chatgptRouter.use("/api/chatgpt", (req, res, next) => {
-  res.setHeader("Cache-Control", "no-store");
+/** Loopback socket, loopback Host (no DNS rebinding) and no forwarding proxy. */
+function inspect(req: Request) {
   const address = req.socket.remoteAddress;
   const local = address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
   let hostname = "";
@@ -20,7 +19,23 @@ chatgptRouter.use("/api/chatgpt", (req, res, next) => {
     hostname = new URL(`http://${req.headers.host ?? "invalid"}`).hostname;
     if (req.headers.origin) sameOrigin = new URL(req.headers.origin).origin === `${req.protocol}://${req.headers.host}`;
   } catch { /* Invalid Host/Origin headers fail the local/same-origin checks below. */ }
-  if (!local || req.headers["x-forwarded-for"] || !["localhost", "127.0.0.1", "[::1]"].includes(hostname)) {
+  const management = local && !req.headers["x-forwarded-for"] && ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+  return { management, sameOrigin };
+}
+
+// Read-only connection state for every page (LAN members included). It exposes no account or token data.
+// Management below stays local-only.
+chatgptRouter.get("/api/chatgpt/public-status", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const status = await chatGPTAuth.status();
+  res.json({ local: inspect(req).management, connected: status.connected, planEnabled: status.planEnabled });
+});
+
+// This connector controls local credentials. Forwarded/public requests must not manage them.
+chatgptRouter.use("/api/chatgpt", (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  const { management, sameOrigin } = inspect(req);
+  if (!management) {
     return void res.status(403).json({ error: msg("err.chatgptLocalOnly") });
   }
   if (req.method !== "GET") {

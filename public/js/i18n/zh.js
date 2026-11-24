@@ -774,6 +774,10 @@ export default {
   "agentConnection.imageNote": "图像生成通道独立配置、独立计费。",
   "agentConnection.blockedPopup": "浏览器阻止了登录窗口，请允许弹出窗口后重试",
   "agentConnection.models": "可用模型：{models}；在 .env 的 GPT_MODEL 中配置。",
+  "agentConnection.serverConnected": "服务器已连接 ChatGPT 订阅，订阅额度可用。",
+  "agentConnection.serverNeedsAuth": "服务器已登录 ChatGPT，但订阅额度未授权，请联系管理员。",
+  "agentConnection.serverNotConnected": "服务器尚未登录 ChatGPT，请联系管理员在服务器本机完成登录。",
+  "agentConnection.serverManagedNote": "局域网成员无需登录；如需管理账号，请在服务器本机打开 http://127.0.0.1:5173。",
   "agentConnection.unavailable": "ChatGPT 连接不可用：{message}",
 
   // ChatGPT manual relay

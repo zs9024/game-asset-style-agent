@@ -774,6 +774,10 @@ export default {
   "agentConnection.imageNote": "The image channel is configured and billed separately.",
   "agentConnection.blockedPopup": "The browser blocked the sign-in window; allow pop-ups and try again",
   "agentConnection.models": "Available models: {models}; set GPT_MODEL in .env.",
+  "agentConnection.serverConnected": "The server is connected to a ChatGPT subscription; quota is available.",
+  "agentConnection.serverNeedsAuth": "The server is signed in to ChatGPT, but subscription usage is not authorized. Ask the administrator.",
+  "agentConnection.serverNotConnected": "The server is not signed in to ChatGPT. Ask the administrator to sign in on the server.",
+  "agentConnection.serverManagedNote": "LAN members do not need to sign in. To manage accounts, open http://127.0.0.1:5173 on the server.",
   "agentConnection.unavailable": "ChatGPT connection unavailable: {message}",
 
   // ChatGPT manual relay

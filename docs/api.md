@@ -60,7 +60,11 @@ Seedream 配置 `ARK_API_KEY` 后可用，默认模型 `doubao-seedream-5-0-flas
 
 ## ChatGPT 订阅连接
 
-以下接口仍受 `ACCESS_TOKEN` 鉴权保护，并且只允许本机直接访问（`localhost` / `127.0.0.1` / IPv6 loopback），拒绝代理转发。POST 必须为同源 JSON 请求。回调由临时的 `127.0.0.1:<port>/auth/callback` 监听器处理，登录最多等待 10 分钟。凭证仅保存在服务器的 `DATA_DIR/auth/chatgpt.json`，不通过这些接口返回。远程自托管可先运行本机 `npm run chatgpt:login` 再安全转移凭证，见 README。
+`GET /api/chatgpt/public-status` 对所有页面开放（仍受 `ACCESS_TOKEN` 鉴权保护），供局域网成员查看只读状态。以下其余接口只允许本机直接访问（`localhost` / `127.0.0.1` / IPv6 loopback），拒绝代理转发。POST 必须为同源 JSON 请求。回调由临时的 `127.0.0.1:<port>/auth/callback` 监听器处理，登录最多等待 10 分钟。凭证仅保存在服务器的 `DATA_DIR/auth/chatgpt.json`，不通过这些接口返回。远程自托管可先运行本机 `npm run chatgpt:login` 再安全转移凭证，见 README。
+
+### `GET /api/chatgpt/public-status`
+
+返回 `{ local, connected, planEnabled }`。`local=true` 表示请求来自服务器本机的 loopback 管理入口；`local=false` 的页面只展示订阅连接状态，不提供账号管理。该接口不返回账号、邮箱或令牌。
 
 ### `GET /api/chatgpt/status`
 

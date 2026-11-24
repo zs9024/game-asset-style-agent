@@ -310,7 +310,8 @@ describe("front end: i18n", () => {
     const allowed = [/state\.pixelKernel = /];
     const offenders: string[] = [];
     for (const f of await readdir(root, { recursive: true })) {
-      if (!f.endsWith(".js") || f.startsWith("i18n/")) continue;
+      const rel = f.replaceAll("\\", "/");
+      if (!rel.endsWith(".js") || rel.startsWith("i18n/")) continue;
       const lines = (await readFile(new URL(f, root), "utf8")).split("\n");
       lines.forEach((l, i) => {
         // Full-width brackets and quotes are Chinese typography too.

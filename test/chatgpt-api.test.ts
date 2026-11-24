@@ -1,3 +1,11 @@
+/*
+ * @Author: zs
+ * @Date: 2026-11-04 18
+ * @LastEditors: zs
+ * @LastEditTime: 2026-11-23 21
+ * @FilePath: \test\chatgpt-api.test.ts
+ * @Description: 
+ */
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -41,6 +49,21 @@ describe("local ChatGPT connection HTTP API", () => {
     assert.equal((await status.json()).connected, false);
     const cfg = await (await request("/api/config")).json();
     assert.deepEqual(cfg.agent, { provider: "gpt", model: "gpt-6.1-sol", authMode: "chatgpt" });
+  });
+
+  it("shows read-only connection state to pages that cannot manage accounts", async () => {
+    const local = await (await request("/api/chatgpt/public-status")).json();
+    assert.deepEqual(local, { local: true, connected: false, planEnabled: false });
+    const remote = await new Promise<{ status?: number; body?: string }>((resolve, reject) => {
+      const req = http.get(base + "/api/chatgpt/public-status", { headers: { Host: "attacker.example", Authorization: "Bearer test-owner-token" } }, (res) => {
+        let body = "";
+        res.setEncoding("utf8").on("data", (chunk) => { body += chunk; }).on("end", () => resolve({ status: res.statusCode, body }));
+      });
+      req.on("error", reject);
+    });
+    assert.equal(remote.status, 200);
+    assert.deepEqual(JSON.parse(remote.body!), { local: false, connected: false, planEnabled: false });
+    assert.doesNotMatch(remote.body!, /email|oaiapp_|accessToken/);
   });
 
   it("rejects forwarded, cross-origin and DNS-rebinding requests", async () => {

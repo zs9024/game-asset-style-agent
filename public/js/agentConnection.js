@@ -2,7 +2,7 @@ import { $, api, esc, toast } from "./lib.js";
 import { t } from "./i18n.js";
 import { state } from "./state.js";
 
-/** Only display connection controls for the configured GPT billing mode. Tokens stay on the server. */
+/** Show subscription status to every page; login controls only work from the server itself. */
 export function bindAgentConnection() {
   const panel = $("#agentConnection");
   const agent = state.config.agent;
@@ -13,17 +13,30 @@ export function bindAgentConnection() {
     return;
   }
   let current;
+  let publicStatus;
   let polling = false;
   let selectedId = "";
   let loginWindow;
   let timer;
 
+  const subscription = () => `<p>${esc(t("agentConnection.subscriptionLine", { model: agent.model }))}</p>`;
+
+  /** LAN / non-loopback pages: connected state only, no account controls or secrets. */
+  const renderPublic = () => {
+    const line = !publicStatus.connected ? t("agentConnection.serverNotConnected")
+      : publicStatus.planEnabled ? t("agentConnection.serverConnected")
+      : t("agentConnection.serverNeedsAuth");
+    panel.innerHTML = `${subscription()}<p>${esc(line)}</p><small>${esc(t("agentConnection.serverManagedNote"))}</small>`;
+  };
+
   const render = () => {
+    if (publicStatus && !publicStatus.local) return renderPublic();
+    if (!current) return;
     const accounts = current.accounts;
     const active = accounts.find((a) => a.id === current.activeAccountId);
     selectedId = accounts.some((a) => a.id === selectedId) ? selectedId : current.activeAccountId ?? "";
     const pending = current.attempt?.status === "pending";
-    panel.innerHTML = `<p>${esc(t("agentConnection.subscriptionLine", { model: agent.model }))}</p>
+    panel.innerHTML = `${subscription()}
       <p>${active ? esc(t("agentConnection.currentAccount", { label: active.label, plan: t(current.planEnabled ? "agentConnection.planEnabled" : "agentConnection.planNeedsAuth") })) : t("agentConnection.pleaseLogin")}</p>
       <select data-chatgpt-account aria-label="${t("agentConnection.accountAria")}">${accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === selectedId ? "selected" : ""}>${esc(a.label)}</option>`).join("")}</select>
       <button type="button" class="btn ghost" data-chatgpt-select ${!accounts.length || pending ? "disabled" : ""}>${t("agentConnection.useAccount")}</button>
@@ -85,5 +98,10 @@ export function bindAgentConnection() {
       toast(err.message);
     }
   });
-  refresh().catch((err) => { panel.textContent = t("agentConnection.unavailable", { message: err.message }); });
+  const boot = async () => {
+    publicStatus = await api("/api/chatgpt/public-status");
+    if (!publicStatus.local) return renderPublic();
+    await refresh();
+  };
+  boot().catch((err) => { panel.textContent = t("agentConnection.unavailable", { message: err.message }); });
 }
